@@ -1,0 +1,36 @@
+# Optional Dependencies that may require special installation on Python 3.13
+# Install with: pip install -r requirements-optional.txt
+
+# RAGAS Evaluation Framework (Optional)
+# Note: These have limited Python 3.13 support, may need building from source
+# datasets>=2.19.0
+# ragas>=0.2.0
+
+# FAISS for similarity search (Alternative to Chroma)
+# Note: Binary wheels not available for Python 3.13
+# You must have C++ build tools installed
+# Install with: pip install faiss-cpu --prefer-binary  (may need to build)
+# Or: pip install faiss-gpu (if you have NVIDIA GPU)
+# faiss-cpu>=1.8.0
+
+# Torch/PyTorch (Heavy dependency, optional)
+# Only needed if using GPU acceleration
+# torch>=2.2.0
+# torchvision>=0.17.0
+# torchaudio>=2.2.0
+
+# Advanced transformers features
+# transformers>=4.40.0
+# accelerate>=0.30.0
+
+# LM Studio Integration (Alternative to Ollama)
+# openai>=1.14.0  # For LM Studio API compatibility
+
+# Better AsyncIO support for large-scale deployments
+# asyncio-contextmanager>=1.0.0
+# aiofiles>=23.2.0
+
+# Production monitoring and profiling
+# prometheus-client>=0.19.0
+# opentelemetry-api>=1.21.0
+# opentelemetry-sdk>=1.21.0

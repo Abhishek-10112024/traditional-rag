@@ -1,0 +1,24 @@
+# Simplified Requirements for Microsoft Store Python on Windows
+
+# Core essentials only (minimum dependencies)
+langchain
+chromadb
+streamlit
+sentence-transformers
+rank-bm25
+ollama
+loguru
+
+# These might need manual installation if you hit path length issues:
+# - pydantic
+# - numpy
+# - pandas
+# - requests
+
+# Install with:
+# pip install --user --no-cache-dir -r requirements-minimal.txt
+
+# Then install others one by one:
+# pip install --user pydantic
+# pip install --user numpy
+# pip install --user pandas

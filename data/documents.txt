@@ -1,0 +1,18 @@
+Placeholder for sample documents. Upload your own documents through the Streamlit UI or use the ingest_documents.py script.
+
+Example document chunks:
+
+=== Document 1 ===
+Machine learning is a subset of artificial intelligence that focuses on the development of algorithms and statistical models that enable computers to improve their performance on tasks through experience.
+
+=== Document 2 ===
+Deep learning is a subset of machine learning methods based on artificial neural networks with representation learning. Learning can be supervised, semi-supervised or unsupervised.
+
+=== Document 3 ===
+Natural Language Processing (NLP) is a subfield of linguistics, computer science, and artificial intelligence concerned with the interactions between computers and human language.
+
+=== Document 4 ===
+Retrieval-Augmented Generation (RAG) is a technique that combines information retrieval with generative models to produce more accurate and contextually relevant responses.
+
+=== Document 5 ===
+Vector embeddings are mathematical representations of text or other data that capture semantic meaning, allowing for similarity comparisons and efficient retrieval.
