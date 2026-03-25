@@ -45,13 +45,13 @@ class Settings(BaseSettings):
     HYBRID_SEARCH_ENABLED: bool = True
     VECTOR_WEIGHT: float = 0.7
     BM25_WEIGHT: float = 0.3
-    TOP_K_RETRIEVAL: int = 10  # Documents to retrieve before reranking
-    TOP_K_RERANK: int = 4      # Documents to pass to LLM
+    TOP_K_RETRIEVAL: int = 15  # Documents to retrieve before reranking
+    TOP_K_RERANK: int = 6      # Documents to pass to LLM
     
     # Reranking Configuration
     RERANKING_ENABLED: bool = True
     RERANKER_BATCH_SIZE: int = 32
-    RERANKER_SCORE_THRESHOLD: float = 0.1  # Filter low scoring results
+    RERANKER_SCORE_THRESHOLD: float = 0.0  # Filter low scoring results
     
     # Chunking Configuration
     CHUNK_SIZE: int = 512

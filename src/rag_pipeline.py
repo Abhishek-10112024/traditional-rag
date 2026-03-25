@@ -12,6 +12,11 @@ import json
 from pathlib import Path
 
 
+def is_broad_query(query: str) -> bool:
+    keywords = ["summary", "overview", "methodology", "steps", "explain", "complete"]
+    return any(k in query.lower() for k in keywords)
+
+
 class RAGPipeline:
     """Complete RAG (Retrieval-Augmented Generation) pipeline."""
     
@@ -53,23 +58,24 @@ class RAGPipeline:
         return hashlib.md5(combined.encode()).hexdigest()
     
     def _build_prompt(self, query: str, context: str) -> str:
-        """Build prompt for LLM.
-        
-        Args:
-            query: User query
-            context: Retrieved context
-            
-        Returns:
-            Formatted prompt
-        """
-        prompt = f"""You are a helpful assistant. Answer the question based on the provided context.
+        prompt = f"""
+    You are a strict Retrieval-Augmented Generation (RAG) assistant.
 
-Context:
-{context}
+    STRICT RULES:
+    1. Answer ONLY using the provided context
+    2. DO NOT use any external knowledge
+    3. If answer is not clearly in context → say: "Not found in provided documents"
+    4. For summary questions → combine ALL relevant points from context
+    5. Be precise and avoid generic answers
 
-Question: {query}
+    Context:
+    {context}
 
-Answer:"""
+    Question:
+    {query}
+
+    Answer:
+    """
         return prompt
     
     def add_documents(self, documents: List[str], metadatas: List[Dict] = None):
@@ -216,16 +222,36 @@ Answer:"""
                 }
             
             # Step 2: Rerank
-            if self.use_reranking:
-                documents = [doc for doc, _, _ in retrieved]
-                metadatas = [meta for _, _, meta in retrieved]
-                reranked = self.rerank_documents(query, documents, metadatas, top_k=top_k_rerank)
+            # Step 2: Rerank (smart handling)
+            documents = [doc for doc, _, _ in retrieved]
+            metadatas = [meta for _, _, meta in retrieved]
+
+            if is_broad_query(query):
+                logger.info("Broad query detected → skipping aggressive reranking")
+                reranked = [(doc, score, meta) for (doc, score, meta) in retrieved[:12]]
             else:
-                reranked = retrieved[:top_k_rerank]
+                if self.use_reranking:
+                    reranked = self.rerank_documents(query, documents, metadatas, top_k=top_k_rerank)
+                    
+                    # 🔥 SAFETY FALLBACK (VERY IMPORTANT)
+                    if not reranked:
+                        logger.warning("Reranker returned 0 → fallback to retrieved docs")
+                        reranked = retrieved[:top_k_rerank]
+                else:
+                    reranked = retrieved[:top_k_rerank]
             
             # Step 3: Build context
-            context = "\n\n".join([f"[{i+1}] {doc}" for i, (doc, _, _) in enumerate(reranked)])
+            context = "\n\n".join([
+                f"[Document {i+1} | Score: {score}]\n{doc}"
+                for i, (doc, score, _) in enumerate(reranked)
+            ])
             
+            # Step 4: Generate
+            # Debug context
+            logger.debug("\n========= FINAL CONTEXT =========")
+            for i, (doc, _, _) in enumerate(reranked):
+                logger.debug(f"[{i+1}] {doc[:200]}")
+
             # Step 4: Generate
             answer = self.generate(context, query)
             

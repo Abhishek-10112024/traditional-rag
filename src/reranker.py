@@ -82,8 +82,21 @@ class Reranker:
             results = sorted(results, key=lambda x: x[1], reverse=True)
             
             # Return top-k
+            # If nothing passes threshold → fallback BEFORE slicing
+            if len(results) == 0:
+                logger.warning("Reranker returned 0 results → fallback to top documents without threshold")
+                
+                # Recompute without threshold
+                results = [
+                    (doc, float(score), meta)
+                    for doc, score, meta in zip(documents, scores, metadatas)
+                ]
+                
+                results = sorted(results, key=lambda x: x[1], reverse=True)
+
+            # Return top-k (AFTER fallback)
             results = results[:top_k]
-            
+
             logger.debug(f"Reranking returned {len(results)} results")
             return results
         except Exception as e:

@@ -141,7 +141,15 @@ class RAGApp:
                                     continue
                                 
                                 # Split by paragraphs or chunks
-                                chunks = [p.strip() for p in content.split("\n\n") if p.strip()]
+                                chunk_size = 800
+                                overlap = 100
+
+                                words = content.split()
+                                chunks = []
+
+                                for i in range(0, len(words), chunk_size - overlap):
+                                    chunk = " ".join(words[i:i + chunk_size])
+                                    chunks.append(chunk)
                                 documents.extend(chunks)
                             
                             if not documents:
@@ -325,7 +333,15 @@ class RAGApp:
                         # Display retrieved documents
                         with st.expander("📚 Retrieved Documents"):
                             for i, doc in enumerate(result["retrieved_docs"], 1):
-                                st.markdown(f"**Document {i}** (Score: {doc['score']:.3f})")
+                                score = doc.get("score", "")
+
+                                # Handle float vs dict safely
+                                if isinstance(score, (int, float)):
+                                    score_display = f"{score:.3f}"
+                                else:
+                                    score_display = str(score)
+
+                                st.markdown(f"**Document {i}** (Score: {score_display})")
                                 st.write(doc["text"][:200] + "...")
                     
                         # Add assistant response
