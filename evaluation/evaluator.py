@@ -4,7 +4,6 @@ from typing import List, Dict, Tuple
 from loguru import logger
 import json
 from pathlib import Path
-import pandas as pd
 
 try:
     from ragas import evaluate
@@ -14,12 +13,20 @@ try:
         context_precision,
         context_recall,
     )
+    from datasets import Dataset
     RAGAS_AVAILABLE = True
 except ImportError:
     RAGAS_AVAILABLE = False
-    logger.warning("RAGAS not installed. Install with: pip install ragas")
-
-from datasets import Dataset
+    evaluate = None
+    faithfulness = None
+    answer_relevancy = None
+    context_precision = None
+    context_recall = None
+    Dataset = None
+    logger.warning(
+        "RAGAS/datasets not installed. Evaluation metrics disabled. "
+        "Install with: pip install -r requirements.txt"
+    )
 
 
 class RAGEvaluator:

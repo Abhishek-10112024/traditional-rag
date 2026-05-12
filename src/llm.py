@@ -86,9 +86,12 @@ class OllamaLLM(BaseLLM):
         Returns:
             Generated text
         """
-        temperature = temperature or settings.TEMPERATURE
-        top_p = top_p or settings.TOP_P
-        max_tokens = max_tokens or settings.MAX_NEW_TOKENS
+        if temperature is None:
+            temperature = settings.TEMPERATURE
+        if top_p is None:
+            top_p = settings.TOP_P
+        if max_tokens is None:
+            max_tokens = settings.MAX_NEW_TOKENS
         
         try:
             payload = {
@@ -168,7 +171,8 @@ class HuggingFaceLLM(BaseLLM):
         if not self.api_token:
             raise Exception("HUGGINGFACE_API_TOKEN not set. Please set HF_TOKEN in your HuggingFace Spaces settings.")
         
-        max_tokens = max_tokens or settings.MAX_NEW_TOKENS
+        if max_tokens is None:
+            max_tokens = settings.MAX_NEW_TOKENS
         
         try:
             headers = {"Authorization": f"Bearer {self.api_token}"}
@@ -253,7 +257,8 @@ class TransformersLLM(BaseLLM):
         Returns:
             Generated text
         """
-        max_tokens = max_tokens or settings.MAX_NEW_TOKENS
+        if max_tokens is None:
+            max_tokens = settings.MAX_NEW_TOKENS
         
         try:
             logger.debug(f"Generating with {self.model}...")

@@ -9,6 +9,7 @@ from src.llm import get_llm_instance
 import hashlib
 import pickle
 import json
+import time
 from pathlib import Path
 
 
@@ -156,7 +157,13 @@ class RAGPipeline:
             logger.error(f"Error reranking documents: {e}")
             raise
     
-    def generate(self, context: str, query: str, use_cache: bool = True) -> str:
+    def generate(self,
+                 context: str,
+                 query: str,
+                 use_cache: bool = True,
+                 temperature: float = None,
+                 top_p: float = None,
+                 max_tokens: int = None) -> str:
         """Generate answer using LLM.
         
         Args:
@@ -168,31 +175,46 @@ class RAGPipeline:
             Generated answer
         """
         try:
-            # Check cache
-            if use_cache and self.cache_enabled:
-                cache_key = self._get_cache_key(query, context)
-                if cache_key in self.cache:
+            # Check cache (compute key once; evict stale entries using CACHE_TTL)
+            cache_key = self._get_cache_key(query, context) if (use_cache and self.cache_enabled) else None
+            if cache_key and cache_key in self.cache:
+                cached_answer, cached_at = self.cache[cache_key]
+                if time.time() - cached_at < settings.CACHE_TTL:
                     logger.debug("Cache hit!")
-                    return self.cache[cache_key]
+                    return cached_answer
+                else:
+                    logger.debug("Cache entry expired; regenerating.")
+                    del self.cache[cache_key]
             
             # Build prompt
             prompt = self._build_prompt(query, context)
             
             # Generate
             logger.debug("Generating answer with LLM...")
-            answer = self.llm.generate(prompt)
+            answer = self.llm.generate(
+                prompt,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens
+            )
             
-            # Cache result
-            if use_cache and self.cache_enabled:
-                cache_key = self._get_cache_key(query, context)
-                self.cache[cache_key] = answer
+            # Store in cache with current timestamp
+            if cache_key:
+                self.cache[cache_key] = (answer, time.time())
             
             return answer
         except Exception as e:
             logger.error(f"Error generating answer: {e}")
             raise
     
-    def query(self, query: str, top_k_retrieval: int = None, top_k_rerank: int = None) -> Dict:
+    def query(self,
+              query: str,
+              top_k_retrieval: int = None,
+              top_k_rerank: int = None,
+              temperature: float = None,
+              top_p: float = None,
+              max_tokens: int = None,
+              use_cache: bool = True) -> Dict:
         """Full RAG query pipeline.
         
         Args:
@@ -221,7 +243,6 @@ class RAGPipeline:
                     "answer": "No relevant documents found.",
                 }
             
-            # Step 2: Rerank
             # Step 2: Rerank (smart handling)
             documents = [doc for doc, _, _ in retrieved]
             metadatas = [meta for _, _, meta in retrieved]
@@ -253,7 +274,14 @@ class RAGPipeline:
                 logger.debug(f"[{i+1}] {doc[:200]}")
 
             # Step 4: Generate
-            answer = self.generate(context, query)
+            answer = self.generate(
+                context,
+                query,
+                use_cache=use_cache,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens
+            )
             
             logger.info("Query processing completed")
             
@@ -272,6 +300,16 @@ class RAGPipeline:
         """Clear response cache."""
         self.cache.clear()
         logger.info("Cache cleared")
+
+    def reset_knowledge_base(self, delete_storage: bool = True):
+        """Clear indexed documents and cache for a fresh session."""
+        if self.hybrid_search:
+            if delete_storage:
+                self.hybrid_search.reset_storage()
+            else:
+                self.hybrid_search.clear()
+        self.clear_cache()
+        logger.info(f"Knowledge base reset completed (delete_storage={delete_storage})")
     
     def save_documents(self, filepath: str):
         """Save indexed documents to file.

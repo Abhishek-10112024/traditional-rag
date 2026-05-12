@@ -1,12 +1,15 @@
 """Streamlit UI for RAG application."""
 
 import streamlit as st
-from streamlit_chat import message
 from typing import List, Dict
 import sys
 from pathlib import Path
 from loguru import logger
-import time
+import io
+import subprocess
+import tempfile
+from pypdf import PdfReader
+from docx import Document
 
 # Add project to path
 project_root = Path(__file__).parent
@@ -73,6 +76,9 @@ class RAGApp:
         
         if "doc_count" not in st.session_state:
             st.session_state.doc_count = 0
+
+        if "startup_reset_done" not in st.session_state:
+            st.session_state.startup_reset_done = False
     
     def initialize_pipeline(self):
         """Initialize RAG pipeline."""
@@ -83,27 +89,96 @@ class RAGApp:
                     use_hybrid_search=st.session_state.get("use_hybrid_search", True)
                 )
                 st.session_state.rag_pipeline = self.rag_pipeline
-                
-                # Check if documents already exist in the persisted vector store
-                try:
-                    if self.rag_pipeline.hybrid_search:
-                        doc_count = self.rag_pipeline.hybrid_search.vector_store.get_document_count()
-                        if doc_count > 0:
-                            st.session_state.documents_loaded = True
-                            st.session_state.doc_count = doc_count
-                            st.success(f"✅ RAG pipeline initialized with {doc_count} documents!")
-                            logger.info(f"RAG pipeline initialized with {doc_count} persisted documents")
-                        else:
-                            st.success("✅ RAG pipeline initialized successfully! (No documents)")
-                            logger.info("RAG pipeline initialized via Streamlit UI")
-                    else:
-                        st.success("✅ RAG pipeline initialized successfully!")
-                except Exception as e:
-                    logger.warning(f"Could not detect document count: {e}")
-                    st.success("✅ RAG pipeline initialized successfully!")
+                st.success("✅ RAG pipeline initialized successfully!")
         except Exception as e:
             st.error(f"❌ Error initializing RAG pipeline: {e}")
             logger.error(f"Error initializing RAG pipeline: {e}")
+
+    def _chunk_text(self, text: str) -> List[str]:
+        """Create overlapping word chunks from extracted document text."""
+        words = text.split()
+        if not words:
+            return []
+
+        chunk_size = settings.CHUNK_SIZE
+        overlap = min(settings.CHUNK_OVERLAP, chunk_size - 1)
+        step = max(1, chunk_size - overlap)
+
+        chunks: List[str] = []
+        for start in range(0, len(words), step):
+            chunk = " ".join(words[start:start + chunk_size]).strip()
+            if chunk:
+                chunks.append(chunk)
+        return chunks
+
+    def _extract_pdf_text(self, file_bytes: bytes) -> str:
+        reader = PdfReader(io.BytesIO(file_bytes))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n".join(pages).strip()
+
+    def _extract_docx_text(self, file_bytes: bytes) -> str:
+        doc = Document(io.BytesIO(file_bytes))
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts).strip()
+
+    def _extract_doc_text(self, file_bytes: bytes) -> str:
+        """Extract legacy .doc text via system converters."""
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=True) as tmp:
+            tmp.write(file_bytes)
+            tmp.flush()
+
+            for command in (["antiword", tmp.name], ["catdoc", tmp.name]):
+                try:
+                    result = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    extracted = result.stdout.strip()
+                    if extracted:
+                        return extracted
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+
+        raise ValueError(
+            "Could not extract .doc text. Install `antiword` or `catdoc`, "
+            "or convert the file to .docx."
+        )
+
+    def _extract_supported_text(self, file) -> str:
+        file_bytes = file.getvalue()
+        suffix = Path(file.name).suffix.lower()
+
+        if suffix == ".pdf":
+            return self._extract_pdf_text(file_bytes)
+        if suffix == ".docx":
+            return self._extract_docx_text(file_bytes)
+        if suffix == ".doc":
+            return self._extract_doc_text(file_bytes)
+
+        raise ValueError(f"Unsupported file type: {suffix}")
+
+    def _ensure_fresh_startup(self):
+        """Reset persisted and in-memory indexes once per app session."""
+        if st.session_state.startup_reset_done:
+            return
+
+        if self.rag_pipeline is None:
+            self.initialize_pipeline()
+
+        if self.rag_pipeline is not None:
+            self.rag_pipeline.reset_knowledge_base(delete_storage=True)
+            st.session_state.documents_loaded = False
+            st.session_state.doc_count = 0
+            st.session_state.chat_history = []
+            st.session_state.startup_reset_done = True
+            st.info("🧹 Started with a fresh knowledge base. Previous session data was removed.")
     
     def handle_document_upload(self):
         """Handle document upload."""
@@ -114,8 +189,8 @@ class RAGApp:
         with col1:
             st.write("**Upload Documents**")
             uploaded_files = st.file_uploader(
-                "Upload text files (.txt, .md)",
-                type=["txt", "md"],
+                "Upload research documents (.pdf, .doc, .docx)",
+                type=["pdf", "doc", "docx"],
                 accept_multiple_files=True
             )
             
@@ -124,47 +199,47 @@ class RAGApp:
                     with st.spinner("Processing documents..."):
                         try:
                             documents = []
+                            if self.rag_pipeline is None:
+                                self.initialize_pipeline()
+
+                            if self.rag_pipeline is None:
+                                st.error("❌ Could not initialize RAG pipeline")
+                                return
+
+                            # Every new upload batch replaces prior indexed data.
+                            self.rag_pipeline.reset_knowledge_base(delete_storage=True)
+                            st.session_state.documents_loaded = False
+                            st.session_state.doc_count = 0
+                            st.session_state.chat_history = []
+
                             for file in uploaded_files:
-                                # Try multiple encodings for robust file reading
-                                content = None
-                                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
-                                    try:
-                                        content = file.read().decode(encoding)
-                                        break
-                                    except (UnicodeDecodeError, AttributeError):
-                                        file.seek(0)  # Reset file pointer
-                                        continue
-                                
-                                if content is None:
-                                    st.warning(f"⚠️ Could not decode {file.name} - skipping")
-                                    logger.warning(f"Skipped {file.name} - unsupported encoding")
+                                try:
+                                    content = self._extract_supported_text(file)
+                                except Exception as extract_error:
+                                    st.warning(f"⚠️ Could not process {file.name}: {extract_error}")
+                                    logger.warning(f"Skipped {file.name}: {extract_error}")
                                     continue
-                                
-                                # Split by paragraphs or chunks
-                                chunk_size = 800
-                                overlap = 100
 
-                                words = content.split()
-                                chunks = []
+                                if not content.strip():
+                                    st.warning(f"⚠️ No extractable text found in {file.name}")
+                                    continue
 
-                                for i in range(0, len(words), chunk_size - overlap):
-                                    chunk = " ".join(words[i:i + chunk_size])
-                                    chunks.append(chunk)
+                                chunks = self._chunk_text(content)
                                 documents.extend(chunks)
                             
                             if not documents:
                                 st.error("❌ No documents were successfully processed")
                                 return
-                            
-                            if self.rag_pipeline is None:
-                                self.initialize_pipeline()
-                            
+
                             self.rag_pipeline.add_documents(documents)
                             st.session_state.documents_loaded = True
                             st.session_state.doc_count = len(documents)
                             
-                            st.success(f"✅ Successfully indexed {len(documents)} document chunks!")
-                            logger.info(f"Indexed {len(documents)} document chunks via Streamlit")
+                            st.success(
+                                f"✅ Indexed {len(documents)} chunks from the new upload. "
+                                "Previous indexed data was replaced."
+                            )
+                            logger.info(f"Indexed {len(documents)} chunks via Streamlit (fresh replace mode)")
                         except Exception as e:
                             st.error(f"❌ Error processing documents: {e}")
                             logger.error(f"Error processing documents: {e}")
@@ -176,14 +251,15 @@ class RAGApp:
                 if st.button("🗑️ Clear All Documents", use_container_width=True):
                     try:
                         if self.rag_pipeline:
-                            self.rag_pipeline.hybrid_search.clear()
-                            st.session_state.documents_loaded = False
-                            st.session_state.doc_count = 0
-                            st.success("✅ Documents cleared!")
+                            self.rag_pipeline.reset_knowledge_base(delete_storage=True)
+                        st.session_state.documents_loaded = False
+                        st.session_state.doc_count = 0
+                        st.session_state.chat_history = []
+                        st.success("✅ Documents cleared and persistent index reset.")
                     except Exception as e:
                         st.error(f"Error clearing documents: {e}")
             else:
-                st.info("No documents indexed yet. Upload files to get started.")
+                st.info("No documents indexed yet. Upload PDF/Word files to get started.")
     
     def handle_settings(self):
         """Handle settings panel."""
@@ -192,46 +268,46 @@ class RAGApp:
         with st.sidebar.expander("Search Configuration"):
             st.session_state.use_hybrid_search = st.checkbox(
                 "Enable Hybrid Search (BM25 + Vector)",
-                value=True,
+                value=settings.HYBRID_SEARCH_ENABLED,
                 help="Use both sparse and dense retrieval"
             )
             
             st.session_state.vector_weight = st.slider(
                 "Vector Search Weight",
-                0.0, 1.0, 0.7,
+                0.0, 1.0, settings.VECTOR_WEIGHT,
                 help="Weight for vector search in hybrid search"
             )
             
             st.session_state.top_k_retrieval = st.slider(
                 "Top-K Documents to Retrieve",
-                1, 20, 10,
+                1, 30, settings.TOP_K_RETRIEVAL,
                 help="Number of documents to retrieve before reranking"
             )
         
         with st.sidebar.expander("Reranking Configuration"):
             st.session_state.use_reranking = st.checkbox(
                 "Enable Reranking",
-                value=True,
+                value=settings.RERANKING_ENABLED,
                 help="Use cross-encoder for reranking"
             )
             
             st.session_state.top_k_rerank = st.slider(
                 "Top-K Documents After Reranking",
-                1, 10, 4,
+                1, 15, settings.TOP_K_RERANK,
                 help="Number of documents to pass to LLM"
             )
         
         with st.sidebar.expander("LLM Configuration"):
             st.session_state.temperature = st.slider(
                 "Temperature",
-                0.0, 2.0, 0.7,
+                0.0, 2.0, settings.TEMPERATURE,
                 step=0.1,
                 help="Higher = more creative, Lower = more focused"
             )
             
             st.session_state.top_p = st.slider(
                 "Top-P (Nucleus Sampling)",
-                0.0, 1.0, 0.9,
+                0.0, 1.0, settings.TOP_P,
                 step=0.05,
                 help="Controls diversity of output"
             )
@@ -246,7 +322,7 @@ class RAGApp:
         with st.sidebar.expander("Cache Configuration"):
             st.session_state.cache_enabled = st.checkbox(
                 "Enable Response Caching",
-                value=True,
+                value=settings.CACHE_ENABLED,
                 help="Cache responses to identical queries"
             )
             
@@ -304,30 +380,31 @@ class RAGApp:
                     if self.rag_pipeline is None:
                         self.initialize_pipeline()
                     
-                    # Check if documents are loaded (either from UI or from script)
+                    # Check if documents are loaded
                     has_documents = st.session_state.get("documents_loaded", False)
-                    
-                    # Also check the actual vector store for documents
-                    if not has_documents and self.rag_pipeline is not None:
-                        try:
-                            if self.rag_pipeline.hybrid_search:
-                                doc_count = self.rag_pipeline.hybrid_search.vector_store.get_document_count()
-                                has_documents = doc_count > 0
-                                if has_documents:
-                                    st.session_state.documents_loaded = True
-                                    st.session_state.doc_count = doc_count
-                        except:
-                            pass
                     
                     if not has_documents:
                         st.warning("⚠️ Please upload and index documents first!")
-                        st.info("💡 You can either:\n1. Upload files in the 'Document Management' tab, or\n2. Run: `python scripts/ingest_documents.py <files>`")
+                        st.info("💡 Upload PDF/Word files in the 'Document Management' tab.")
                         st.session_state.chat_history.pop()  # Remove the user message we just added
                     else:
+                        # Apply runtime UI settings before query.
+                        self.rag_pipeline.cache_enabled = st.session_state.get("cache_enabled", settings.CACHE_ENABLED)
+                        if self.rag_pipeline.hybrid_search:
+                            vector_weight = st.session_state.get("vector_weight", settings.VECTOR_WEIGHT)
+                            self.rag_pipeline.hybrid_search.set_weights(
+                                vector_weight=vector_weight,
+                                bm25_weight=max(0.0, 1.0 - vector_weight)
+                            )
+
                         result = self.rag_pipeline.query(
                             user_input,
-                            top_k_retrieval=st.session_state.get("top_k_retrieval", 10),
-                            top_k_rerank=st.session_state.get("top_k_rerank", 4)
+                            top_k_retrieval=st.session_state.get("top_k_retrieval", settings.TOP_K_RETRIEVAL),
+                            top_k_rerank=st.session_state.get("top_k_rerank", settings.TOP_K_RERANK),
+                            temperature=st.session_state.get("temperature", settings.TEMPERATURE),
+                            top_p=st.session_state.get("top_p", settings.TOP_P),
+                            max_tokens=st.session_state.get("max_tokens", settings.MAX_NEW_TOKENS),
+                            use_cache=st.session_state.get("cache_enabled", settings.CACHE_ENABLED)
                         )
                     
                         # Display retrieved documents
@@ -349,13 +426,13 @@ class RAGApp:
                             "role": "assistant",
                             "content": result["answer"]
                         })
-                
-                # Display response
-                with st.chat_message("assistant", avatar="🤖"):
-                    st.markdown(result["answer"])
-                
-                logger.info(f"Query processed: {user_input[:50]}...")
-                st.rerun()
+
+                        # Display response
+                        with st.chat_message("assistant", avatar="🤖"):
+                            st.markdown(result["answer"])
+                        
+                        logger.info(f"Query processed: {user_input[:50]}...")
+                        st.rerun()
             
             except Exception as e:
                 st.error(f"❌ Error processing query: {e}")
@@ -365,11 +442,13 @@ class RAGApp:
         """Run the Streamlit app."""
         # Header
         st.title("🤖 RAG Assistant")
-        st.markdown("*A free, production-ready Retrieval-Augmented Generation system*")
+        st.markdown("*A fresh-session Retrieval-Augmented Generation system for PDF/Word research documents*")
         
         # Auto-initialize pipeline on page load
         if self.rag_pipeline is None and st.session_state.rag_pipeline is None:
             self.initialize_pipeline()
+
+        self._ensure_fresh_startup()
         
         # Main layout
         tab1, tab2, tab3 = st.tabs(["💬 Chat", "📄 Documents", "ℹ️ About"])

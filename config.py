@@ -43,23 +43,23 @@ class Settings(BaseSettings):
     
     # Search Configuration
     HYBRID_SEARCH_ENABLED: bool = True
-    VECTOR_WEIGHT: float = 0.7
-    BM25_WEIGHT: float = 0.3
-    TOP_K_RETRIEVAL: int = 15  # Documents to retrieve before reranking
-    TOP_K_RERANK: int = 6      # Documents to pass to LLM
+    VECTOR_WEIGHT: float = 0.8
+    BM25_WEIGHT: float = 0.2
+    TOP_K_RETRIEVAL: int = 20  # Higher recall for long research documents
+    TOP_K_RERANK: int = 8      # Keep enough context after reranking
     
     # Reranking Configuration
     RERANKING_ENABLED: bool = True
     RERANKER_BATCH_SIZE: int = 32
-    RERANKER_SCORE_THRESHOLD: float = 0.0  # Filter low scoring results
+    RERANKER_SCORE_THRESHOLD: float = 0.05
     
     # Chunking Configuration
-    CHUNK_SIZE: int = 512
-    CHUNK_OVERLAP: int = 50
+    CHUNK_SIZE: int = 900      # Word-based chunks for research-paper style documents
+    CHUNK_OVERLAP: int = 150
     
     # Caching Configuration
     CACHE_ENABLED: bool = True
-    CACHE_TTL: int = 3600  # 1 hour in seconds
+    CACHE_TTL: int = 1800  # 30 minutes in seconds
     
     # Batch Processing
     BATCH_SIZE: int = 32
@@ -70,9 +70,9 @@ class Settings(BaseSettings):
     
     # API Configuration
     MAX_CONTEXT_LENGTH: int = 2000
-    TEMPERATURE: float = 0.7
+    TEMPERATURE: float = 0.25
     TOP_P: float = 0.9
-    MAX_NEW_TOKENS: int = 512
+    MAX_NEW_TOKENS: int = 800
     
     class Config:
         env_file = ".env"

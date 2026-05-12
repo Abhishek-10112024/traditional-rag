@@ -146,11 +146,41 @@ class VectorStore:
             logger.info("Collection cleared")
         except Exception as e:
             logger.error(f"Error clearing collection: {e}")
+
+    def reset_storage(self):
+        """Reset the collection by deleting and recreating it via the ChromaDB API.
+
+        Using ChromaDB's own delete_collection + get_or_create_collection is safe
+        because the client manages its own SQLite file handles internally.  The
+        previous approach (shutil.rmtree while the client has open handles) leaves
+        stale lock files on macOS/APFS, causing the new client to open the database
+        in read-only mode and making every subsequent write fail with error 1032.
+        """
+        try:
+            # Delete via API — ChromaDB closes its own handles before removing files
+            try:
+                self.client.delete_collection(name=self.collection_name)
+                logger.debug(f"Deleted collection '{self.collection_name}'")
+            except Exception as e:
+                # Collection may not exist on a cold start; that is fine
+                logger.debug(f"Collection not found (skipping delete): {e}")
+
+            # Recreate the collection
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
+            logger.info("Vector store storage reset completed")
+        except Exception as e:
+            logger.error(f"Error resetting vector store storage: {e}")
+            raise
     
     def persist(self):
-        """Persist the vector store to disk."""
-        try:
-            self.client.persist()
-            logger.info("Vector store persisted to disk")
-        except Exception as e:
-            logger.warning(f"Error persisting vector store: {e}")
+        """No-op: chromadb.PersistentClient auto-persists on every write.
+
+        The legacy chromadb.Client().persist() API was removed in Chroma 0.4+.
+        Kept for interface compatibility; callers do not need to call this.
+        """
+        logger.debug(
+            "persist() called — PersistentClient auto-persists; no manual flush needed."
+        )

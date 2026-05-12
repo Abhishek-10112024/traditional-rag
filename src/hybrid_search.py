@@ -19,8 +19,8 @@ class HybridSearch:
             vector_weight: Weight for vector search (0-1)
             bm25_weight: Weight for BM25 search (0-1)
         """
-        self.vector_weight = vector_weight or settings.VECTOR_WEIGHT
-        self.bm25_weight = bm25_weight or settings.BM25_WEIGHT
+        self.vector_weight = vector_weight if vector_weight is not None else settings.VECTOR_WEIGHT
+        self.bm25_weight = bm25_weight if bm25_weight is not None else settings.BM25_WEIGHT
         
         # Normalize weights
         total = self.vector_weight + self.bm25_weight
@@ -114,22 +114,23 @@ class HybridSearch:
             for doc, score, metadata in vector_results:
                 doc_id = metadata.get("id", doc)
                 if doc_id not in combined_scores:
-                    combined_scores[doc_id] = (doc, metadata, 0.0)
-                _, meta, combined_score = combined_scores[doc_id]
-                combined_scores[doc_id] = (doc, meta, combined_score + score * self.vector_weight)
+                    combined_scores[doc_id] = (doc, 0.0, metadata)
+                d, combined_score, meta = combined_scores[doc_id]
+                combined_scores[doc_id] = (d, combined_score + score * self.vector_weight, meta)
             
             # Add BM25 results
             for doc, score, metadata in bm25_results:
                 doc_id = metadata.get("id", doc)
                 if doc_id not in combined_scores:
-                    combined_scores[doc_id] = (doc, metadata, 0.0)
-                _, meta, combined_score = combined_scores[doc_id]
-                combined_scores[doc_id] = (doc, meta, combined_score + score * self.bm25_weight)
+                    combined_scores[doc_id] = (doc, 0.0, metadata)
+                d, combined_score, meta = combined_scores[doc_id]
+                combined_scores[doc_id] = (d, combined_score + score * self.bm25_weight, meta)
             
-            # Sort by combined score and return top-k
+            # Sort by combined score (index 1) and return top-k
+            # Each entry is (doc, score, metadata) — consistent with all other modules.
             sorted_results = sorted(
                 combined_scores.values(),
-                key=lambda x: x[2],
+                key=lambda x: x[1],
                 reverse=True
             )[:top_k]
             
@@ -150,3 +151,21 @@ class HybridSearch:
         self.documents = []
         self.metadatas = []
         logger.info("Hybrid search cleared")
+
+    def reset_storage(self):
+        """Reset all indexes including persisted vector DB files."""
+        self.vector_store.reset_storage()
+        self.bm25_search.reset()
+        self.documents = []
+        self.metadatas = []
+        logger.info("Hybrid search storage reset")
+
+    def set_weights(self, vector_weight: float, bm25_weight: float):
+        """Update hybrid weights at runtime and normalize them."""
+        total = vector_weight + bm25_weight
+        if total <= 0:
+            logger.warning("Invalid weights provided, keeping previous values")
+            return
+
+        self.vector_weight = vector_weight / total
+        self.bm25_weight = bm25_weight / total

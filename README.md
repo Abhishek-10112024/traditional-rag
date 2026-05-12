@@ -10,507 +10,470 @@ app_file: streamlit_app.py
 pinned: false
 ---
 
-# RAG Assistant - Production Ready Free RAG System
+# RAG Assistant
 
-A complete, production-ready Retrieval-Augmented Generation (RAG) system built entirely with free and open-source tools. Features hybrid search, reranking, local LLMs, and comprehensive evaluation.
+A production-oriented Retrieval-Augmented Generation (RAG) stack using open-source components: **hybrid retrieval** (Chroma dense search + BM25), optional **cross-encoder reranking**, and generation via **Ollama** (local), **Hugging Face Inference** (cloud), or an optional **Transformers** fallback. Includes a **Streamlit** UI, scripts for ingestion, and an evaluation layer (`ragas` + `datasets`; see [`requirements.txt`](requirements.txt)).
+
+**Cost:** Local inference with Ollama has no API fees; cloud LLMs may require a Hugging Face token (free tier exists but may be rate-limited).
+
+---
+
+## Table of contents
+
+1. [Features](#features)
+2. [Tech stack](#tech-stack)
+3. [Repository layout](#repository-layout)
+4. [Quick start](#quick-start)
+5. [Installation](#installation)
+6. [Usage](#usage)
+7. [Configuration](#configuration)
+8. [Architecture](#architecture)
+9. [Indexing and query behavior](#indexing-and-query-behavior)
+10. [Evaluation](#evaluation)
+11. [Deployment](#deployment)
+12. [Docker](#docker)
+13. [Python 3.13 and optional packages](#python-313-and-optional-packages)
+14. [Windows installation notes](#windows-installation-notes)
+15. [Troubleshooting](#troubleshooting)
+16. [Optimization](#optimization)
+17. [Performance expectations](#performance-expectations)
+18. [FAQ](#faq)
+19. [License and acknowledgments](#license-and-acknowledgments)
+
+---
 
 ## Features
 
-✨ **Production Ready**
-- Comprehensive error handling and logging
-- Caching for performance optimization
-- Batch processing support
-- Type hints throughout the codebase
+- **Hybrid search:** Dense vectors (sentence-transformers) plus BM25; configurable weights.
+- **Reranking:** Cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2` by default) with threshold and top-k.
+- **LLM backends:** Ollama (`LLM_TYPE=ollama`), Hugging Face Inference (`LLM_TYPE=huggingface`), or local Transformers (`LLM_TYPE=transformers`).
+- **Persistence:** Chroma stores embeddings under `cache/vectorstore`.
+- **Caching:** In-memory answer cache in `RAGPipeline` (keyed by query + context; see [Configuration](#configuration)).
+- **UI:** Streamlit chat for research docs with `.pdf/.doc/.docx` uploads and runtime tuning controls.
+- **Fresh-session indexing:** startup reset and upload-time replacement so stale vectors/documents are not reused.
+- **Evaluation:** `evaluation/evaluator.py` (RAGAS) and `evaluation/metrics.py` (extra retrieval/similarity helpers).
 
-🔍 **Hybrid Search**
-- Combines BM25 (sparse retrieval) and vector search (dense retrieval)
-- Configurable weights for hybrid aggregation
-- Optimized for both precision and recall
+---
 
-📊 **Reranking**
-- Cross-encoder based reranking with `ms-marco-MiniLM-L-6-v2`
-- Improves relevance of retrieved documents
-- Configurable thresholds and batch sizes
+## Tech stack
 
-🤖 **Free LLMs**
-- **Ollama**: Run models locally (mistral, neural-chat, orca-mini, etc.)
-- **HuggingFace**: Cloud inference (free tier available)
-- No API keys required for Ollama
+| Layer | Technology |
+|-------|------------|
+| Embeddings | Sentence-Transformers (`all-MiniLM-L6-v2` default) |
+| Vector store | Chroma (cosine, persistent) |
+| Sparse search | BM25 (`rank-bm25`) |
+| Reranker | Sentence-Transformers CrossEncoder |
+| LLM | Ollama / Hugging Face / Transformers |
+| UI | Streamlit |
+| Config | `pydantic-settings`, `.env` |
+| Logging | loguru |
 
-💾 **Vector Store**
-- Chroma: Persistent vector storage
-- Automatic persistence to disk
-- Metadata support for document tracking
+---
 
-🚀 **Speed Optimization**
-- Response caching (LRU-based)
-- Batch processing for embeddings
-- Efficient hybrid search aggregation
-
-📈 **Evaluation Framework**
-- RAGAS metrics (faithfulness, answer relevancy, context precision, recall)
-- Additional metrics (retrieval precision/recall, MRR, NDCG)
-- Comprehensive evaluation reports
-
-💬 **Streamlit UI**
-- Intuitive chat interface
-- Document management
-- Real-time settings configuration
-- Retrieved documents visualization
-
-## Tech Stack
+## Repository layout
 
 ```
-Embeddings:     sentence-transformers (all-MiniLM-L6-v2)
-Vector Store:   Chroma
-Reranker:       cross-encoder (MS MARCO)
-Search:         BM25 + Vector Hybrid
-LLM:            Ollama (local) / HuggingFace (cloud)
-Frontend:       Streamlit
-Evaluation:     RAGAS + Custom Metrics
-Cloud:          HuggingFace Spaces / Streamlit Cloud
+traditional-rag/
+├── config.py                 # Settings (env + defaults)
+├── main.py                   # Example CLI-style demo
+├── streamlit_app.py          # Web UI
+├── requirements.txt
+├── Dockerfile
+├── src/
+│   ├── embeddings.py         # EmbeddingGenerator
+│   ├── vectorstore.py        # Chroma VectorStore
+│   ├── bm25_search.py        # BM25Search
+│   ├── hybrid_search.py      # HybridSearch
+│   ├── reranker.py           # Reranker
+│   ├── llm.py                # Ollama / HuggingFace / Transformers
+│   └── rag_pipeline.py       # RAGPipeline orchestration
+├── evaluation/
+│   ├── evaluator.py          # RAGAS wrapper (requires ragas + datasets)
+│   └── metrics.py            # Additional metrics
+├── scripts/
+│   ├── ingest_documents.py   # File ingestion + optional pickle
+│   └── evaluate.py           # Dataset loader (extend for full runs)
+├── data/                     # Sample / user documents
+├── cache/                    # Chroma persistence (vectorstore)
+└── logs/
 ```
 
-## Project Structure
+---
 
-```
-vectorless-rag/
-├── src/                          # Core RAG modules
-│   ├── __init__.py
-│   ├── embeddings.py             # Embedding generation
-│   ├── vectorstore.py            # Chroma vector store
-│   ├── bm25_search.py            # BM25 sparse search
-│   ├── hybrid_search.py          # Combined search
-│   ├── reranker.py               # Cross-encoder reranking
-│   ├── llm.py                    # LLM integration (Ollama/HF)
-│   └── rag_pipeline.py           # Main RAG pipeline
-├── evaluation/                   # Evaluation framework
-│   ├── __init__.py
-│   ├── evaluator.py              # RAGAS evaluator
-│   └── metrics.py                # Additional metrics
-├── scripts/                      # Utility scripts
-│   ├── ingest_documents.py       # Batch document ingestion
-│   └── evaluate.py               # Evaluation runner
-├── data/                         # Data directory
-│   └── processed/                # Processed documents
-├── cache/                        # Cache directory
-├── logs/                         # Log directory
-├── streamlit_app.py              # Streamlit frontend
-├── config.py                     # Configuration management
-├── requirements.txt              # Dependencies
-├── .env.example                  # Environment template
-├── Dockerfile                    # Docker containerization
-└── README.md                     # This file
-```
+## Quick start
 
-## Installation
-
-### 1. Clone/Setup Repository
+**Prerequisites:** Python 3.10+ (3.13 supported with current `requirements.txt`), ~4GB+ RAM for small models, disk for downloads.
 
 ```bash
-cd vectorless-rag
-```
-
-### 2. Create Virtual Environment
-
-```bash
+cd traditional-rag
 python -m venv venv
-
-# Activate virtual environment
-# Windows:
-venv\Scripts\activate
-# macOS/Linux:
-source venv/bin/activate
-```
-
-### 3. Install Dependencies
-
-```bash
+source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+# Optional: create `.env` with secrets (e.g. HF_TOKEN=...). Defaults work from config.py.
 ```
 
-### 4. Setup Environment Variables
+**LLM (pick one):**
 
-```bash
-# Copy example env file
-cp .env.example .env
+- **Ollama (local):** Install [Ollama](https://ollama.ai), run `ollama serve`, then `ollama pull mistral` (or another model). Defaults in `config.py` point to `http://localhost:11434`.
+- **Hugging Face (cloud):** Create a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Set `LLM_TYPE=huggingface` in `config.py` or via env. The app reads the token from the **`HF_TOKEN`** environment variable (see `config.py`).
 
-# Edit .env as needed (optional, defaults work fine)
-```
-
-### 5. Setup LLM Backend
-
-#### Option A: Ollama (Recommended for local inference)
-
-**Install Ollama:**
-- Download from [ollama.ai](https://ollama.ai)
-- Install and run
-
-**Start Ollama Server:**
-
-```bash
-ollama serve
-```
-
-**Download a Model (in another terminal):**
-
-```bash
-# Balanced model (recommended)
-ollama pull mistral
-
-# Faster, smaller model
-ollama pull neural-chat
-
-# Lightweight model for slow systems
-ollama pull orca-mini
-
-# Large model (requires 8GB+ RAM)
-ollama pull llama2
-```
-
-#### Option B: HuggingFace Inference
-
-Set environment variable:
-
-```bash
-export HUGGINGFACE_API_TOKEN=your_token_here
-```
-
-Then update `config.py`:
-```python
-LLM_TYPE = "huggingface"
-```
-
-## Usage
-
-### Option 1: Streamlit Web UI (Recommended)
+**Run the UI:**
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501) in your browser.
+Open [http://localhost:8501](http://localhost:8501). Use the **Documents** tab to upload `.pdf`, `.doc`, or `.docx`, then **Chat**.
 
-Features:
-- Upload documents via UI
-- Interactive chat interface
-- View retrieved documents
-- Configure settings in real-time
+**Run the demo script:**
 
-### Option 2: Python API
+```bash
+python main.py
+```
+
+**Ingest files from disk:**
+
+```bash
+python scripts/ingest_documents.py path/to/file1.txt path/to/file2.md
+```
+
+---
+
+## Installation
+
+### Virtual environment
+
+```bash
+python -m venv venv
+source venv/bin/activate    # macOS/Linux
+# venv\Scripts\activate     # Windows
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Environment variables
+
+Copy `.env.example` to `.env` if present. Important variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `HF_TOKEN` | Hugging Face API token (used by `Settings` for cloud LLM) |
+| `LOG_LEVEL` | Logging verbosity (e.g. `DEBUG`) |
+
+`config.py` uses `pydantic-settings`; field names there map to env vars (e.g. uppercased settings).
+
+### Ollama models (examples)
+
+```bash
+ollama pull mistral        # balanced default
+ollama pull neural-chat    # smaller / faster
+ollama pull orca-mini      # lightweight
+```
+
+Match `OLLAMA_MODEL` in `config.py` to the pulled model name.
+
+---
+
+## Usage
+
+### Streamlit (recommended)
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Features: document upload (`pdf/doc/docx`) with chunking, chat history, retrieved-doc expander, and runtime sidebar controls for search/rerank/generation/cache.
+
+Important behavior:
+- On app startup, previous persisted index data is removed automatically.
+- On each new upload batch, prior indexed data is deleted and replaced by the new batch.
+
+### Python API
 
 ```python
 from src.rag_pipeline import RAGPipeline
 
-# Initialize
 rag = RAGPipeline()
+rag.add_documents(["Paragraph one...", "Paragraph two..."])
+result = rag.query("Your question?")
 
-# Add documents
-documents = [
-    "Document 1 text...",
-    "Document 2 text...",
-]
-rag.add_documents(documents)
-
-# Query
-result = rag.query("What is your question?")
-
-print("Answer:", result["answer"])
-print("Context:", result["context"])
-print("Retrieved Docs:", result["retrieved_docs"])
+print(result["answer"])
+print(result["context"])
+print(result["retrieved_docs"])
 ```
 
-### Option 3: Command Line (Document Ingestion)
+### Command-line ingestion
 
 ```bash
-python scripts/ingest_documents.py file1.txt file2.txt file3.md
+python scripts/ingest_documents.py doc1.txt doc2.md --output cache/indexed_docs.pkl
 ```
+
+Splits files on blank lines (`\n\n`) into chunks before indexing. Also calls `save_documents()` on the pipeline when finished.
+
+### Research-paper defaults
+
+The default configuration is tuned for academic PDFs/Word docs with dense sections, references, and tables:
+- `VECTOR_WEIGHT=0.8`, `BM25_WEIGHT=0.2`
+- `TOP_K_RETRIEVAL=20`, `TOP_K_RERANK=8`
+- `RERANKER_SCORE_THRESHOLD=0.05`
+- `CHUNK_SIZE=900`, `CHUNK_OVERLAP=150` (word-based in UI ingestion)
+- `TEMPERATURE=0.25`, `TOP_P=0.9`, `MAX_NEW_TOKENS=800`
+
+---
 
 ## Configuration
 
-Edit `config.py` or `.env` to customize:
+Edit [`config.py`](config.py) or set environment variables. Highlights:
 
-### Search Configuration
-```python
-HYBRID_SEARCH_ENABLED = True
-VECTOR_WEIGHT = 0.7          # Weight for vector search
-BM25_WEIGHT = 0.3            # Weight for BM25 search
-TOP_K_RETRIEVAL = 10         # Documents to retrieve before reranking
+| Area | Keys (examples) |
+|------|------------------|
+| Models | `EMBEDDING_MODEL`, `RERANKER_MODEL`, `OLLAMA_MODEL`, `HUGGINGFACE_MODEL` |
+| LLM mode | `LLM_TYPE`: `ollama` \| `huggingface` \| `transformers` |
+| Hybrid | `HYBRID_SEARCH_ENABLED`, `VECTOR_WEIGHT`, `BM25_WEIGHT`, `TOP_K_RETRIEVAL` |
+| Rerank | `RERANKING_ENABLED`, `TOP_K_RERANK`, `RERANKER_SCORE_THRESHOLD`, `RERANKER_BATCH_SIZE` |
+| Generation | `TEMPERATURE`, `TOP_P`, `MAX_NEW_TOKENS`, `MAX_CONTEXT_LENGTH` |
+| Chunking (defaults for pipeline-aware callers) | `CHUNK_SIZE`, `CHUNK_OVERLAP` |
+| Cache | `CACHE_ENABLED`, `CACHE_TTL` (TTL is defined in settings; in-memory cache in `rag_pipeline` does not expire by TTL automatically—extend if needed) |
+| Paths | `VECTORSTORE_PATH` (under `cache/`), `LOG_FILE` |
+
+**Note:** `VECTORSTORE_TYPE` may mention FAISS; the implemented store is **Chroma only**.
+
+**Hugging Face LLM:** Set `LLM_TYPE=huggingface` and provide `HF_TOKEN` for `HuggingFaceLLM`.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph ingest [Indexing]
+    D[Documents]
+    E[EmbeddingGenerator]
+    V[VectorStore Chroma]
+    B[BM25Search]
+    D --> E --> V
+    D --> B
+  end
+  subgraph query [Query path]
+    Q[User query]
+    H[HybridSearch]
+    R[Reranker]
+    L[LLM]
+    Q --> H --> R --> L
+  end
 ```
 
-### Reranking Configuration
-```python
-RERANKING_ENABLED = True
-TOP_K_RERANK = 4             # Documents to send to LLM
-RERANKER_SCORE_THRESHOLD = 0.1
-```
+**Orchestration:** [`src/rag_pipeline.py`](src/rag_pipeline.py) — `retrieve()` → optional rerank (with a “broad query” shortcut that limits aggressive reranking) → context string → strict RAG prompt → `llm.generate()` → optional cache.
 
-### LLM Configuration
-```python
-OLLAMA_MODEL = "mistral"     # Model to use
-TEMPERATURE = 0.7            # 0.0 = deterministic, 1.0+ = creative
-TOP_P = 0.9                  # Nucleus sampling
-MAX_NEW_TOKENS = 512         # Max response length
-```
+**Components:**
 
-### Caching
-```python
-CACHE_ENABLED = True         # Enable response caching
-CACHE_TTL = 3600            # Cache timeout in seconds
-BATCH_SIZE = 32             # Batch size for embeddings
-```
+| Module | Responsibility |
+|--------|----------------|
+| `embeddings.py` | SentenceTransformer encode / singleton |
+| `vectorstore.py` | Chroma add/query; cosine distance → similarity |
+| `bm25_search.py` | BM25Okapi, simple tokenization |
+| `hybrid_search.py` | Embeds query, merges vector + BM25 scores by doc id |
+| `reranker.py` | CrossEncoder scores; threshold with fallback |
+| `llm.py` | Ollama HTTP, HF router endpoint, optional Transformers pipeline |
 
-## Deployment
+---
 
-### Option 1: HuggingFace Spaces (Free, Recommended)
+## Indexing and query behavior
 
-1. Create account on [huggingface.co](https://huggingface.co)
-2. Create new Space
-3. Choose Streamlit runtime
-4. Import repository or upload files
-5. Add `README_DEPLOYMENT.md` content to Space README
-6. Note: Ollama models need to use HuggingFace Inference API instead
+**Indexing:** `HybridSearch.add_documents` embeds texts, writes to Chroma, rebuilds BM25 in memory. Metadata defaults to `{"id": i}` per batch.
 
-### Option 2: Streamlit Cloud (Free)
+**Persistence:** Vectors persist on disk. BM25 is **in-memory**; after a restart, if Chroma still has documents but the process never called `add_documents` in that session, hybrid search may use **vector-only** until documents are re-ingested (BM25 branch empty).
 
-1. Push repository to GitHub
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Connect GitHub account
-4. Select repository and main file
+**Chunking:** `scripts/ingest_documents.py` splits on double newlines. `streamlit_app.py` uses its own word-based windows for uploads—not necessarily `CHUNK_SIZE` from config.
 
-### Option 3: Railway (Free Tier)
+**Chroma IDs:** Batches use `doc_0` … `doc_{n-1}`. Re-indexing strategies should avoid unintended overwrites if you add multiple batches without clearing the collection.
 
-1. Push to GitHub
-2. Connect GitHub to Railway
-3. Deploy from Dockerfile
-
-### Option 4: Docker (Any Cloud)
-
-```bash
-# Build image
-docker build -t rag-assistant .
-
-# Run locally
-docker run -p 8501:8501 rag-assistant
-
-# Deploy to cloud (push image to registry)
-```
-
-### ⚠️ Important for Cloud Deployment
-
-Free cloud platforms have limitations:
-- **Ollama**: Requires local installation (not suitable for web)
-- **Solution**: Use HuggingFace Inference API instead in cloud
-
-Update `config.py` for cloud:
-```python
-LLM_TYPE = "huggingface"
-```
+---
 
 ## Evaluation
 
-### Using RAGAS
+### RAGAS
+
+Listed in [`requirements.txt`](requirements.txt) (`ragas`, `datasets`). If import fails on your Python version, remove those lines from requirements and reinstall, or upgrade: `pip install ragas datasets --upgrade`.
 
 ```python
 from evaluation.evaluator import get_evaluator
 
 evaluator = get_evaluator()
-
-# Evaluate single response
 scores = evaluator.evaluate_response(
-    query="What is it?",
-    context="Retrieved context...",
-    ground_truth="Expected answer...",
-    generated_answer="Generated answer..."
+    query="...",
+    context="...",
+    ground_truth="...",
+    generated_answer="...",
 )
-
-# Batch evaluation
-results = evaluator.evaluate_batch(
-    queries=[...],
-    contexts=[...],
-    ground_truths=[...],
-    generated_answers=[...]
-)
-
-# Get report
-print(evaluator.create_report(results))
 ```
 
-### Creating Evaluation Dataset
+Batch API: `evaluate_batch(...)`. Reports: `create_report(results)`.
 
-Create `evaluation_dataset.json`:
+### CLI scaffold
+
+```bash
+python scripts/evaluate.py --dataset evaluation_dataset.json --output cache/evaluation_results.json
+```
+
+The script loads the dataset and evaluator; wire it to your RAG outputs for full end-to-end scoring.
+
+### JSON dataset shape (example)
 
 ```json
 [
-    {
-        "question": "What is machine learning?",
-        "ground_truth": "Machine learning is...",
-        "relevant_contexts": ["Context 1", "Context 2"]
-    }
+  {
+    "question": "What is machine learning?",
+    "ground_truth": "...",
+    "relevant_contexts": ["..."]
+  }
 ]
 ```
 
-```bash
-python scripts/evaluate.py --dataset evaluation_dataset.json
+---
+
+## Deployment
+
+### Cloud constraint
+
+**Ollama is local-only** for typical deployments. For Hugging Face Spaces, Streamlit Cloud, or other hosts without Ollama, set **`LLM_TYPE=huggingface`** and provide **`HF_TOKEN`** in the platform’s secrets.
+
+### Hugging Face Spaces
+
+1. Create a Space with SDK **Streamlit**, Python **3.10+** (this repo’s README frontmatter targets 3.13; align with Space runtime).
+2. Push this repository or upload files.
+3. Add secret **`HF_TOKEN`** (or mirror your `config.py` expectations).
+4. Ensure `config.py` uses `LLM_TYPE=huggingface` for cloud generation.
+
+The YAML **frontmatter at the top of this file** is valid for Hugging Face Spaces metadata (`app_file: streamlit_app.py`). If you maintain a separate Space-only README, you can copy that header.
+
+**Optional model hints for Spaces** (legacy pattern):
+
+```yaml
+models:
+  - sentence-transformers/all-MiniLM-L6-v2
+  - cross-encoder/ms-marco-MiniLM-L-6-v2
 ```
 
-## Optimization Tips
+### Streamlit Cloud
 
-### 1. Performance Optimization
-- Use smaller models (`orca-mini`, `neural-chat`)
-- Enable caching
-- Use batch processing
-- Optimize chunk sizes (CHUNK_SIZE = 256-512)
+Connect the GitHub repo, main branch, entrypoint `streamlit_app.py`, add `HF_TOKEN` in secrets if using Hugging Face LLM.
 
-### 2. Quality Optimization
-- Increase TOP_K_RETRIEVAL for better context
-- Enable reranking (highest impact)
-- Fine-tune vector/BM25 weights
-- Use larger embedding model if resources allow
+### Railway / Render / Fly.io
 
-### 3. Memory Optimization
-- Use quantized models
-- Set smaller batch sizes
-- Reduce max tokens
-- Clear cache periodically
+Use the included [`Dockerfile`](Dockerfile) or platform-specific Python build; expose port **8501**.
 
-### 4. Cost Optimization (Cloud)
-- Use HuggingFace Spaces (truly free)
-- Batch queries offline
-- Cache responses
-- Use smaller models
+### Production checklist
 
-## Troubleshooting
-
-### Ollama Connection Error
-```
-Error: Cannot connect to Ollama server at http://localhost:11434
-```
-
-**Solution:**
-```bash
-# Make sure Ollama is running
-ollama serve
-
-# Check port is correct in config.py
-# Try accessing http://localhost:11434/api/tags
-```
-
-### Out of Memory
-
-**Solutions:**
-- Use smaller model: `neural-chat` or `orca-mini`
-- Reduce batch size in config
-- Reduce embedding model size
-- Increase chunk overlap, reduce chunk size
-
-### Slow Performance
-
-**Solutions:**
-- Enable caching
-- Use smaller embedding model
-- Reduce TOP_K_RETRIEVAL
-- Disable reranking if not needed
-- Use quantized models with Ollama
-
-### RAGAS Import Error
-```
-ModuleNotFoundError: No module named 'ragas'
-```
-
-**Solution:**
-```bash
-pip install ragas datasets
-```
-
-## Performance Benchmarks
-
-Typical performance on consumer hardware (CPU):
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| Embedding generation | ~0.5s/doc | Batch of 32 |
-| Vector search | ~10-50ms | On ~1000 docs |
-| BM25 search | ~5-20ms | On ~1000 docs |
-| Hybrid search | ~20-70ms | Combined |
-| Reranking | ~100-300ms | On top-k results |
-| LLM generation | ~2-10s | Depends on model/length |
-| **Full pipeline** | **~3-15s** | End-to-end |
-
-## Architecture Diagram
-
-```
-User Query
-    ↓
-Embedding Generation
-    ↓
-┌─────────────────────┐
-│  Hybrid Search      │
-├──────────┬──────────┤
-│ Vector   │  BM25    │
-│ Search   │  Search  │
-└────┬─────┴────┬────┘
-     ↓          ↓
-   Results (Top-K)
-     ↓
-Reranking (Cross-Encoder)
-     ↓
-Context Assembly
-     ↓
-Prompt Building
-     ↓
-LLM Generation
-     ↓
-Response Caching
-     ↓
-Final Answer
-```
-
-## Future Enhancements
-
-- [ ] Multi-modal embeddings (text + images)
-- [ ] Query expansion for better retrieval
-- [ ] Semantic routing
-- [ ] Fine-tuned reranker
-- [ ] Agentic RAG with tool use
-- [ ] Web search integration
-- [ ] Multi-document summarization
-- [ ] Streaming responses
-
-## License
-
-MIT
-
-## Contributing
-
-Contributions welcome! Areas for improvement:
-
-1. Additional evaluation metrics
-2. Support for more LLM backends
-3. Advanced chunking strategies
-4. Query optimization
-5. Performance improvements
-
-## Support
-
-For issues or questions:
-
-1. Check [troubleshooting section](#troubleshooting)
-2. Review configuration options
-3. Check logs in `logs/` directory
-4. Enable debug logging: `LOG_LEVEL=DEBUG`
-
-## Acknowledgments
-
-- [Sentence-Transformers](https://www.sbert.net/)
-- [Chroma](https://www.trychroma.com/)
-- [Ollama](https://ollama.ai/)
-- [Streamlit](https://streamlit.io/)
-- [RAGAS](https://docs.ragas.io/)
-- [LangChain](https://python.langchain.com/)
+- Cloud LLM + secrets configured
+- No committed `.env` or tokens
+- Test cold start and model download time
+- Consider smaller `TOP_K_RETRIEVAL` / `BATCH_SIZE` on CPU tiers
 
 ---
 
-**Built with ❤️ using free and open-source tools**
+## Docker
 
-Made for production use with zero cost. No credit cards. No API keys (for local LLMs).
+```bash
+docker build -t rag-assistant .
+docker run -p 8501:8501 rag-assistant
+```
+
+The image runs Streamlit on `0.0.0.0:8501`. For Ollama from the container you must run Ollama elsewhere and point `OLLAMA_BASE_URL` to a reachable host.
+
+---
+
+## Python 3.13 and optional extras
+
+- **Core stack** in [`requirements.txt`](requirements.txt) targets Python **3.10+** including **3.13**. If **`ragas` / `datasets`** fail to install, delete those two requirement lines—core RAG (`streamlit`, `main.py`, ingestion) works without them; evaluation helpers will warn and skip metrics.
+- **FAISS:** Not used by this codebase; **Chroma** is the vector store. Only add `faiss-cpu` if you introduce a different backend yourself.
+
+Quick check:
+
+```bash
+python -c "from src.rag_pipeline import RAGPipeline; print('OK')"
+```
+
+---
+
+## Windows installation notes
+
+**Long paths / Microsoft Store Python:** If installs fail under long `WindowsApps` paths, prefer **python.org** installers with “Add to PATH”, or enable **Win32 long paths** (Group Policy: Computer Configuration → Administrative Templates → System → Filesystem → Enable Win32 long paths), then reboot.
+
+**Alternative:** Use **Miniconda/Anaconda** with `conda create -n rag python=3.13` and install from `requirements.txt` inside the environment.
+
+Typo note (some guides): use `gpedit.msc` for Local Group Policy Editor.
+
+---
+
+## Troubleshooting
+
+| Symptom | Things to try |
+|---------|----------------|
+| Cannot connect to Ollama | Run `ollama serve`; check `OLLAMA_BASE_URL`; open `http://localhost:11434/api/tags` |
+| HF errors / auth | Set `HF_TOKEN`; ensure `LLM_TYPE=huggingface` |
+| `ModuleNotFoundError: ragas` | `pip install ragas datasets` |
+| Out of memory | Smaller Ollama model; reduce `BATCH_SIZE`, `TOP_K_RETRIEVAL`; disable reranking |
+| Slow answers | Enable cache; reduce retrieval top-k; smaller models |
+| Empty retrieval | Index documents first; check Chroma path and permissions |
+| RAGAS context format | Evaluator splits context on lines; ensure retrieved context is compatible |
+
+Logs: `logs/app.log`, `logs/streamlit.log`.
+
+---
+
+## Optimization
+
+- **Latency:** Cache on; smaller embedding/rerank models; lower `TOP_K_RETRIEVAL`.
+- **Quality:** Reranking on; tune `VECTOR_WEIGHT` / `BM25_WEIGHT`; increase retrieval before rerank.
+- **Memory:** Lower batch sizes; shorter `MAX_NEW_TOKENS`.
+
+---
+
+## Performance expectations
+
+Rough CPU-oriented timings (vary by hardware):
+
+| Step | Typical range |
+|------|----------------|
+| Embed batch | ~0.5s per tens of chunks |
+| Vector + BM25 hybrid | tens of ms at modest corpus sizes |
+| Rerank | ~100–300 ms |
+| LLM | seconds (model-dependent) |
+| End-to-end query | ~3–15 s |
+
+---
+
+## FAQ
+
+**Does it work offline?** Yes, with Ollama and cached models, after initial downloads.
+
+**How much disk?** Models dominate (often multiple GB for LLMs); Chroma grows with corpus.
+
+**Can I add a custom LLM?** Extend `src/llm.py` and `get_llm()`.
+
+**Is commercial use allowed?** MIT license—verify third-party model licenses separately.
+
+**Evaluate quality?** Use RAGAS + your labeled pairs; `scripts/evaluate.py` is a starting point for automation.
+
+---
+
+## Future enhancements
+
+- Query expansion, semantic routing, agents/tool use
+- Streaming generation
+- Stronger chunking strategies and multimodal support
+
+---
+
+## License and acknowledgments
+
+**License:** MIT
+
+**Contributing:** Issues and PRs welcome (metrics, backends, chunking, evaluation harness).
+
+**Acknowledgments:** Sentence-Transformers, Chroma, Ollama, Streamlit, RAGAS, Hugging Face, rank-bm25, PyTorch/transformers ecosystem.
+
+---
+
+Built with open-source tools; local Ollama usage avoids paid APIs.
