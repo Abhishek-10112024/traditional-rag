@@ -23,8 +23,16 @@ class Reranker:
         logger.info(f"Loading reranker model: {self.model_name}")
         
         try:
-            self.model = CrossEncoder(self.model_name)
-            logger.info(f"Reranker model loaded successfully")
+            # local_files_only=True prevents HuggingFace Hub checks on every startup
+            # once the model is cached at ~/.cache/huggingface/hub/.
+            # Falls back to a fresh download if the cache is missing.
+            try:
+                self.model = CrossEncoder(self.model_name, local_files_only=True)
+                logger.info("Loaded reranker model from local cache (offline mode).")
+            except Exception:
+                logger.info("Reranker not in local cache — downloading from HuggingFace Hub...")
+                self.model = CrossEncoder(self.model_name)
+            logger.info("Reranker model loaded successfully")
         except Exception as e:
             logger.error(f"Error loading reranker model: {e}")
             raise

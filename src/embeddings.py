@@ -25,7 +25,15 @@ class EmbeddingGenerator:
         logger.info(f"Loading embedding model: {self.model_name}")
         
         try:
-            self.model = SentenceTransformer(self.model_name)
+            # local_files_only=True prevents HuggingFace Hub checks on every startup
+            # once the model is cached at ~/.cache/huggingface/hub/.
+            # Falls back to a fresh download if the cache is missing.
+            try:
+                self.model = SentenceTransformer(self.model_name, local_files_only=True)
+                logger.info("Loaded embedding model from local cache (offline mode).")
+            except Exception:
+                logger.info("Model not in local cache — downloading from HuggingFace Hub...")
+                self.model = SentenceTransformer(self.model_name)
             self.embedding_dim = self.model.get_sentence_embedding_dimension()
             logger.info(f"Embedding model loaded successfully. Dimension: {self.embedding_dim}")
         except Exception as e:
