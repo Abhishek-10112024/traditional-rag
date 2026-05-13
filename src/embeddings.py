@@ -2,8 +2,11 @@
 
 import hashlib
 from typing import List
+# pyrefly: ignore [missing-import]
 import numpy as np
+# pyrefly: ignore [missing-import]
 from sentence_transformers import SentenceTransformer
+# pyrefly: ignore [missing-import]
 from loguru import logger
 from config import settings
 import os

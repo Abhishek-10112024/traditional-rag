@@ -9,6 +9,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# pyrefly: ignore [missing-import]
 from loguru import logger
 from evaluation.evaluator import get_evaluator
 

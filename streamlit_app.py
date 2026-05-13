@@ -1,15 +1,23 @@
 """Streamlit UI for RAG application."""
 
+# pyrefly: ignore [missing-import]
 import streamlit as st
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import sys
 from pathlib import Path
+# pyrefly: ignore [missing-import]
 from loguru import logger
 import io
+import re
+import hashlib
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import subprocess
 import tempfile
+# pyrefly: ignore [missing-import]
 from pypdf import PdfReader
 from docx import Document
+# pyrefly: ignore [missing-import]
+import pdfplumber
 
 # Add project to path
 project_root = Path(__file__).parent
@@ -94,27 +102,382 @@ class RAGApp:
             st.error(f"❌ Error initializing RAG pipeline: {e}")
             logger.error(f"Error initializing RAG pipeline: {e}")
 
-    def _chunk_text(self, text: str) -> List[str]:
-        """Create overlapping word chunks from extracted document text."""
+    # ------------------------------------------------------------------
+    # Smart chunking: table-aware + recursive text + heading prefix
+    # ------------------------------------------------------------------
+
+    def _is_heading_line(self, line: str) -> bool:
+        """Return True if the line looks like a section heading."""
+        stripped = line.strip()
+        if not stripped or len(stripped) > 120:
+            return False
+        # Markdown headings (#, ##, …)
+        if stripped.startswith('#'):
+            return True
+        # Bold-only line (**Title**)
+        if re.match(r'^\*\*[^*]+\*\*\.?$', stripped):
+            return True
+        # ALL-CAPS short phrase (2–10 words, no punctuation at end)
+        words = stripped.split()
+        if stripped.isupper() and 2 <= len(words) <= 10:
+            return True
+        return False
+
+    def _split_segments(self, text: str) -> list:
+        """Split text into alternating TABLE and PROSE segments."""
+        segments: list = []
+        lines = text.split('\n')
+        buf_type = 'prose'
+        buf_lines: List[str] = []
+
+        def flush(t: str, ls: List[str]):
+            content = '\n'.join(ls).strip()
+            if content:
+                segments.append({'type': t, 'content': content})
+
+        for line in lines:
+            stripped = line.strip()
+            # A line belongs to a table if it starts with '|'
+            is_table_row = stripped.startswith('|')
+            if is_table_row:
+                if buf_type == 'prose':
+                    flush('prose', buf_lines)
+                    buf_lines = []
+                buf_type = 'table'
+                buf_lines.append(line)
+            else:
+                if buf_type == 'table':
+                    flush('table', buf_lines)
+                    buf_lines = []
+                buf_type = 'prose'
+                buf_lines.append(line)
+
+        flush(buf_type, buf_lines)
+        return segments
+
+    def _chunk_prose(self, text: str, heading_prefix: str = '') -> List[str]:
+        """Recursively chunk prose: paragraph → sentence → word fallback."""
+        chunk_size = settings.CHUNK_SIZE
+        overlap = min(settings.CHUNK_OVERLAP, chunk_size - 1)
+        prefix = f"{heading_prefix} | " if heading_prefix else ''
+
         words = text.split()
         if not words:
             return []
 
-        chunk_size = settings.CHUNK_SIZE
-        overlap = min(settings.CHUNK_OVERLAP, chunk_size - 1)
-        step = max(1, chunk_size - overlap)
+        # Fits in a single chunk — return directly
+        if len(words) <= chunk_size:
+            return [f"{prefix}{text.strip()}"]
 
-        chunks: List[str] = []
+        # ── Level 1: paragraph split ──────────────────────────────────
+        paragraphs = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
+        if len(paragraphs) > 1:
+            chunks: List[str] = []
+            buffer: List[str] = []
+            for para in paragraphs:
+                para_words = para.split()
+                if len(para_words) > chunk_size:
+                    # Flush buffer first, then recurse on oversized paragraph
+                    if buffer:
+                        chunks.append(f"{prefix}{' '.join(buffer)}")
+                        buffer = buffer[-overlap:] if overlap else []
+                    sub = self._chunk_prose(para, heading_prefix)
+                    chunks.extend(sub)
+                    if sub:
+                        buffer = sub[-1].split()[-overlap:] if overlap else []
+                elif len(buffer) + len(para_words) <= chunk_size:
+                    buffer.extend(para_words)
+                else:
+                    chunks.append(f"{prefix}{' '.join(buffer)}")
+                    buffer = buffer[-overlap:] if overlap else []
+                    buffer.extend(para_words)
+            if buffer:
+                chunks.append(f"{prefix}{' '.join(buffer)}")
+            return [c for c in chunks if c.strip()]
+
+        # ── Level 2: sentence split ───────────────────────────────────
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        if len(sentences) > 1:
+            chunks = []
+            buffer = []
+            for sent in sentences:
+                sent_words = sent.split()
+                if len(buffer) + len(sent_words) <= chunk_size:
+                    buffer.extend(sent_words)
+                else:
+                    if buffer:
+                        chunks.append(f"{prefix}{' '.join(buffer)}")
+                        buffer = buffer[-overlap:] if overlap else []
+                    buffer.extend(sent_words)
+            if buffer:
+                chunks.append(f"{prefix}{' '.join(buffer)}")
+            return [c for c in chunks if c.strip()]
+
+        # ── Level 3: word-level overlap (last resort) ─────────────────
+        step = max(1, chunk_size - overlap)
+        chunks = []
         for start in range(0, len(words), step):
-            chunk = " ".join(words[start:start + chunk_size]).strip()
-            if chunk:
+            chunk = f"{prefix}{' '.join(words[start:start + chunk_size])}"
+            if chunk.strip():
                 chunks.append(chunk)
         return chunks
 
+    def _smart_chunk(self, text: str) -> List[str]:
+        """Table-aware smart chunker with section heading context.
+
+        - Markdown table blocks → preserved as a single chunk each.
+        - Prose → paragraph/sentence/word recursive split.
+        - Section heading lines are detected and prepended to following chunks.
+        """
+        segments = self._split_segments(text)
+        chunks: List[str] = []
+        current_heading = ''
+
+        for seg in segments:
+            if seg['type'] == 'table':
+                # Keep entire table as one chunk; prepend heading context
+                table_text = seg['content']
+                if current_heading:
+                    table_text = f"{current_heading}\n{table_text}"
+                chunks.append(table_text)
+            else:
+                # Prose: scan for headings, chunk blocks between headings
+                prose_lines = seg['content'].split('\n')
+                block_lines: List[str] = []
+                block_heading = current_heading
+
+                for line in prose_lines:
+                    if self._is_heading_line(line):
+                        # Flush accumulated prose before this heading
+                        if block_lines:
+                            block_text = '\n'.join(block_lines)
+                            chunks.extend(self._chunk_prose(block_text, block_heading))
+                            block_lines = []
+                        # Update active heading
+                        block_heading = line.strip().lstrip('#').strip().strip('*')
+                        current_heading = block_heading
+                    else:
+                        block_lines.append(line)
+
+                # Flush remaining prose
+                if block_lines:
+                    block_text = '\n'.join(block_lines)
+                    chunks.extend(self._chunk_prose(block_text, block_heading))
+
+        return [c for c in chunks if c.strip()]
+
+    def _chunk_text(self, text: str) -> List[str]:
+        """Legacy word-overlap chunker — delegates to _smart_chunk."""
+        return self._smart_chunk(text)
+
     def _extract_pdf_text(self, file_bytes: bytes) -> str:
+        """Fallback: flat text extraction via pypdf (no table structure)."""
         reader = PdfReader(io.BytesIO(file_bytes))
         pages = [page.extract_text() or "" for page in reader.pages]
         return "\n".join(pages).strip()
+
+    def _extract_pdf_pages_structured(self, file_bytes: bytes, filename: str):
+        """Page-aware PDF extraction using pdfplumber.
+
+        For each page:
+        - Tables are extracted as markdown (preserving rows/columns).
+        - Remaining text is extracted from regions outside table areas.
+        - Lone page-number lines (single digits) are filtered out.
+        - A [Page N] marker is prepended so the LLM can cite sources.
+
+        Returns:
+            (texts, metadatas): parallel lists for RAGPipeline.add_documents().
+            metadatas entries: {"source": filename, "page": int}
+        """
+        texts, metadatas = [], []
+        try:
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                for page_num, page in enumerate(pdf.pages, start=1):
+                    page_parts = [f"[Page {page_num}]"]
+
+                    # 1. Extract tables as markdown --------------------------
+                    table_bboxes = []
+                    for table_obj in page.find_tables():
+                        table_bboxes.append(table_obj.bbox)
+                        data = table_obj.extract()
+                        if not data:
+                            continue
+                        md_rows = []
+                        for row_idx, row in enumerate(data):
+                            cells = [
+                                str(c or "").strip().replace("\n", " ")
+                                for c in row
+                            ]
+                            md_rows.append("| " + " | ".join(cells) + " |")
+                            if row_idx == 0:
+                                md_rows.append(
+                                    "|" + "|".join(["---"] * len(cells)) + "|"
+                                )
+                        page_parts.append("\n".join(md_rows))
+
+                    # 2. Extract text OUTSIDE table areas --------------------
+                    filtered_page = page
+                    for bbox in table_bboxes:
+                        try:
+                            filtered_page = filtered_page.outside_bbox(bbox)
+                        except Exception:
+                            pass  # edge-case clipping failure — skip
+
+                    raw_text = (
+                        filtered_page.extract_text(x_tolerance=3, y_tolerance=3)
+                        or ""
+                    )
+
+                    # Filter lone page-number lines (e.g. "47", "  3  ")
+                    clean_lines = [
+                        line
+                        for line in raw_text.split("\n")
+                        if not line.strip().isdigit()
+                    ]
+                    clean_text = "\n".join(clean_lines).strip()
+                    if clean_text:
+                        page_parts.append(clean_text)
+
+                    # 3. Build combined page content ------------------------
+                    page_content = "\n\n".join(
+                        p for p in page_parts if p.strip()
+                    )
+                    if page_content.strip() == f"[Page {page_num}]":
+                        continue  # completely empty page
+
+                    # 4. Chunk and tag with metadata -----------------------
+                    for chunk in self._smart_chunk(page_content):
+                        texts.append(chunk)
+                        metadatas.append({"source": filename, "page": page_num})
+
+        except Exception as e:
+            logger.warning(
+                f"pdfplumber failed for {filename}: {e} — falling back to pypdf"
+            )
+            raw = self._extract_pdf_text(file_bytes)
+            for chunk in self._smart_chunk(raw):
+                texts.append(chunk)
+                metadatas.append({"source": filename, "page": 0})
+
+        return texts, metadatas
+
+    # LLaVA image extraction tunables
+    _LLAVA_MIN_PX     = 200    # skip images smaller than this in either dimension
+    _LLAVA_MAX_IMAGES = 20     # hard cap per document to avoid runaway processing
+    _LLAVA_TIMEOUT    = 30     # seconds before giving up on one image
+
+    def _extract_pdf_images(self, file_bytes: bytes, filename: str):
+        """Extract and describe embedded images/charts from a PDF using pymupdf + LLaVA.
+
+        Optimisations vs the original:
+        - Min-size filter raised to 200×200 px (cuts icons/logos).
+        - Hard cap of 20 figures per document.
+        - MD5 deduplication — same image appearing on multiple pages is only
+          described once.
+        - 30-second per-image timeout via ThreadPoolExecutor; slow/hung images
+          are skipped with a warning instead of blocking forever.
+        - Streamlit progress bar so the user can see how far along we are.
+
+        Requires: `ollama pull llava` to be run once before first use.
+        """
+        from src.llm import describe_image_bytes
+        texts: List[str] = []
+        metadatas: List[Dict] = []
+
+        try:
+            # pyrefly: ignore [missing-import]
+            import fitz  # pymupdf
+        except ImportError:
+            logger.warning("pymupdf not installed; skipping image extraction.")
+            return texts, metadatas
+
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+
+            # ── Pass 1: collect candidate images ──────────────────────────
+            candidates = []  # list of (page_num, img_idx, xref, img_bytes, w, h)
+            seen_hashes: set = set()
+
+            for page_num, page in enumerate(doc, start=1):
+                for img_idx, img_info in enumerate(page.get_images(full=True), start=1):
+                    if len(candidates) >= self._LLAVA_MAX_IMAGES:
+                        break
+                    xref = img_info[0]
+                    try:
+                        base_image = doc.extract_image(xref)
+                        width  = base_image.get("width", 0)
+                        height = base_image.get("height", 0)
+                        img_bytes = base_image["image"]
+
+                        # Skip small images (icons, bullets, decorative)
+                        if width < self._LLAVA_MIN_PX or height < self._LLAVA_MIN_PX:
+                            continue
+
+                        # Deduplicate: same content on multiple pages → describe once
+                        img_hash = hashlib.md5(img_bytes).hexdigest()
+                        if img_hash in seen_hashes:
+                            logger.debug(
+                                f"Skipped duplicate image xref={xref} p{page_num}"
+                            )
+                            continue
+                        seen_hashes.add(img_hash)
+
+                        candidates.append((page_num, img_idx, xref, img_bytes, width, height))
+                    except Exception as e:
+                        logger.debug(f"Skipped image xref={xref} p{page_num}: {e}")
+
+                if len(candidates) >= self._LLAVA_MAX_IMAGES:
+                    logger.info(
+                        f"Reached {self._LLAVA_MAX_IMAGES}-image cap for {filename}; "
+                        "remaining images skipped."
+                    )
+                    break
+
+            if not candidates:
+                return texts, metadatas
+
+            # ── Pass 2: describe with timeout + progress bar ──────────────
+            progress_bar = st.progress(0, text="🖼️ Describing figures with LLaVA…")
+
+            for i, (page_num, img_idx, xref, img_bytes, width, height) in enumerate(candidates):
+                progress_pct = int((i / len(candidates)) * 100)
+                progress_bar.progress(
+                    progress_pct,
+                    text=f"🖼️ Figure {i + 1} of {len(candidates)} (page {page_num})…"
+                )
+
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(describe_image_bytes, img_bytes)
+                        description = future.result(timeout=self._LLAVA_TIMEOUT)
+
+                    if description:
+                        texts.append(
+                            f"[Page {page_num}] [Figure {img_idx}]\n{description}"
+                        )
+                        metadatas.append({
+                            "source": filename,
+                            "page": page_num,
+                            "type": "figure",
+                        })
+                        logger.debug(
+                            f"Described figure {img_idx} on page {page_num} "
+                            f"({width}x{height}px)"
+                        )
+                except FuturesTimeoutError:
+                    logger.warning(
+                        f"LLaVA timeout ({self._LLAVA_TIMEOUT}s) for image on "
+                        f"page {page_num} — skipped."
+                    )
+                except Exception as e:
+                    logger.debug(f"Error describing image xref={xref} p{page_num}: {e}")
+
+            progress_bar.progress(100, text=f"✅ Described {len(texts)} figure(s).")
+
+        except Exception as e:
+            logger.warning(f"Image extraction failed for {filename}: {e}")
+
+        return texts, metadatas
 
     def _extract_docx_text(self, file_bytes: bytes) -> str:
         doc = Document(io.BytesIO(file_bytes))
@@ -195,13 +558,24 @@ class RAGApp:
             )
             
             if uploaded_files:
+                process_images = st.checkbox(
+                    "🖼️ Describe charts & figures with LLaVA",
+                    value=False,
+                    help=(
+                        "Uses the LLaVA vision model (via Ollama) to generate text "
+                        "descriptions of charts and graphics found inside PDFs. "
+                        "Run `ollama pull llava` once before enabling this. "
+                        "Adds ~2-5 seconds per image during upload."
+                    ),
+                )
                 if st.button("📤 Process and Index Documents", use_container_width=True):
                     with st.spinner("Processing documents..."):
                         try:
-                            documents = []
+                            documents: List[str] = []
+                            all_metadatas: List[Dict] = []
+
                             if self.rag_pipeline is None:
                                 self.initialize_pipeline()
-
                             if self.rag_pipeline is None:
                                 st.error("❌ Could not initialize RAG pipeline")
                                 return
@@ -213,33 +587,97 @@ class RAGApp:
                             st.session_state.chat_history = []
 
                             for file in uploaded_files:
+                                file_bytes = file.getvalue()
+                                suffix = Path(file.name).suffix.lower()
                                 try:
-                                    content = self._extract_supported_text(file)
+                                    if suffix == ".pdf":
+                                        # Structured extraction: tables + page tracking
+                                        new_texts, new_metas = (
+                                            self._extract_pdf_pages_structured(
+                                                file_bytes, file.name
+                                            )
+                                        )
+                                        if not new_texts:
+                                            st.warning(
+                                                f"⚠️ No extractable content in {file.name}"
+                                            )
+                                            continue
+                                        documents.extend(new_texts)
+                                        all_metadatas.extend(new_metas)
+
+                                        # Optionally describe charts/figures with LLaVA
+                                        if process_images:
+                                            with st.spinner(
+                                                f"🖼️ Describing figures in {file.name}..."
+                                            ):
+                                                img_texts, img_metas = (
+                                                    self._extract_pdf_images(
+                                                        file_bytes, file.name
+                                                    )
+                                                )
+                                            if img_texts:
+                                                documents.extend(img_texts)
+                                                all_metadatas.extend(img_metas)
+                                                st.info(
+                                                    f"🖼️ Described {len(img_texts)} "
+                                                    f"figure(s) from {file.name}"
+                                                )
+                                    elif suffix == ".docx":
+                                        content = self._extract_docx_text(file_bytes)
+                                        if not content.strip():
+                                            st.warning(
+                                                f"⚠️ No extractable text in {file.name}"
+                                            )
+                                            continue
+                                        chunks = self._chunk_text(content)
+                                        documents.extend(chunks)
+                                        all_metadatas.extend(
+                                            [{"source": file.name, "page": 0}]
+                                            * len(chunks)
+                                        )
+                                    elif suffix == ".doc":
+                                        content = self._extract_doc_text(file_bytes)
+                                        if not content.strip():
+                                            st.warning(
+                                                f"⚠️ No extractable text in {file.name}"
+                                            )
+                                            continue
+                                        chunks = self._chunk_text(content)
+                                        documents.extend(chunks)
+                                        all_metadatas.extend(
+                                            [{"source": file.name, "page": 0}]
+                                            * len(chunks)
+                                        )
+                                    else:
+                                        st.warning(
+                                            f"⚠️ Unsupported file type: {suffix}"
+                                        )
+                                        continue
                                 except Exception as extract_error:
-                                    st.warning(f"⚠️ Could not process {file.name}: {extract_error}")
+                                    st.warning(
+                                        f"⚠️ Could not process {file.name}: {extract_error}"
+                                    )
                                     logger.warning(f"Skipped {file.name}: {extract_error}")
                                     continue
 
-                                if not content.strip():
-                                    st.warning(f"⚠️ No extractable text found in {file.name}")
-                                    continue
-
-                                chunks = self._chunk_text(content)
-                                documents.extend(chunks)
-                            
                             if not documents:
                                 st.error("❌ No documents were successfully processed")
                                 return
 
-                            self.rag_pipeline.add_documents(documents)
+                            self.rag_pipeline.add_documents(documents, all_metadatas)
                             st.session_state.documents_loaded = True
                             st.session_state.doc_count = len(documents)
-                            
+
                             st.success(
-                                f"✅ Indexed {len(documents)} chunks from the new upload. "
+                                f"✅ Indexed {len(documents)} chunks from {len(uploaded_files)} file(s). "
                                 "Previous indexed data was replaced."
                             )
-                            logger.info(f"Indexed {len(documents)} chunks via Streamlit (fresh replace mode)")
+                            logger.info(
+                                f"Indexed {len(documents)} chunks via Streamlit (fresh replace mode)"
+                            )
+                            # Force a full re-render so the Chat tab unlocks
+                            # immediately without requiring a second click.
+                            st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error processing documents: {e}")
                             logger.error(f"Error processing documents: {e}")
@@ -404,22 +842,31 @@ class RAGApp:
                             temperature=st.session_state.get("temperature", settings.TEMPERATURE),
                             top_p=st.session_state.get("top_p", settings.TOP_P),
                             max_tokens=st.session_state.get("max_tokens", settings.MAX_NEW_TOKENS),
-                            use_cache=st.session_state.get("cache_enabled", settings.CACHE_ENABLED)
+                            use_cache=st.session_state.get("cache_enabled", settings.CACHE_ENABLED),
+                            # Last 3 exchanges (6 msgs), excluding the current user msg
+                            # that was just appended — so the LLM sees prior context only
+                            chat_history=st.session_state.chat_history[:-1][-6:],
                         )
                     
-                        # Display retrieved documents
                         with st.expander("📚 Retrieved Documents"):
                             for i, doc in enumerate(result["retrieved_docs"], 1):
                                 score = doc.get("score", "")
+                                meta = doc.get("metadata", {})
+                                page = meta.get("page") if isinstance(meta, dict) else None
+                                source = meta.get("source", "") if isinstance(meta, dict) else ""
 
-                                # Handle float vs dict safely
-                                if isinstance(score, (int, float)):
-                                    score_display = f"{score:.3f}"
-                                else:
-                                    score_display = str(score)
+                                score_display = (
+                                    f"{score:.3f}" if isinstance(score, (int, float)) else str(score)
+                                )
+                                page_display = f" | 📄 Page {page}" if page else ""
+                                source_display = f" | {source}" if source else ""
 
-                                st.markdown(f"**Document {i}** (Score: {score_display})")
-                                st.write(doc["text"][:200] + "...")
+                                st.markdown(
+                                    f"**Chunk {i}** "
+                                    f"(Score: {score_display}{page_display}{source_display})"
+                                )
+                                preview = doc["text"][:300]
+                                st.write(preview + ("..." if len(doc["text"]) > 300 else ""))
                     
                         # Add assistant response
                         st.session_state.chat_history.append({
@@ -465,37 +912,63 @@ class RAGApp:
         with tab3:
             st.markdown("""
             ## About RAG Assistant
-            
-            This is a production-ready Retrieval-Augmented Generation (RAG) system built with:
-            
-            ### Features
-            - **Hybrid Search**: Combines BM25 (sparse) and vector (dense) retrieval
-            - **Reranking**: Uses cross-encoder models to improve result relevance
-            - **Free LLMs**: Supports Ollama for local inference
-            - **Caching**: Response caching for improved performance
-            - **Production Ready**: Error handling, logging, and performance optimization
-            
-            ### Tech Stack
-            - **Embeddings**: Sentence-Transformers (all-MiniLM-L6-v2)
-            - **Vector Store**: Chroma (free, open-source)
-            - **Reranker**: Cross-Encoder (ms-marco-MiniLM-L-6-v2)
-            - **LLM**: Ollama (mistral, neural-chat, orca-mini)
-            - **Frontend**: Streamlit
-            - **Cloud**: HuggingFace Spaces / Streamlit Cloud
-            
-            ### Getting Started
-            1. Upload documents in the Documents tab
-            2. Configure settings as needed
-            3. Start chatting with the assistant
-            
-            ### Tips
-            - Use more documents for better context
-            - Adjust temperature for different response styles
-            - Enable reranking for better relevance
-            - Check retrieved documents to understand sources
-            
+
+            A fully **local, offline-capable** Retrieval-Augmented Generation system built for
+            government reports, research papers, and structured documents.
+
             ---
-            Built with ❤️ using free and open-source tools
+
+            ### ✨ Features
+
+            | Capability | Detail |
+            |---|---|
+            | **Hybrid Search** | BM25 (sparse) + dense vector retrieval with configurable weights |
+            | **Cross-Encoder Reranking** | `ms-marco-MiniLM-L-6-v2` re-scores candidates for precision |
+            | **Smart Chunking** | Table-aware: markdown tables kept whole; prose split by paragraph → sentence → word with section-heading prefix |
+            | **Multimodal (LLaVA)** | Embedded charts & figures described by LLaVA via Ollama; deduped, capped at 20/doc, 30 s timeout |
+            | **Multi-turn Memory** | Last 3 exchanges passed to LLM so follow-up questions resolve correctly |
+            | **Page Citations** | Every chunk tagged `[Page N]`; LLM instructed to cite page numbers |
+            | **Response Cache** | In-memory answer cache (TTL 30 min) avoids re-generating identical queries |
+            | **Fresh-session Reset** | On startup and each new upload batch, stale vectors are removed automatically |
+
+            ---
+
+            ### 🛠 Tech Stack
+
+            | Layer | Technology |
+            |---|---|
+            | Embeddings | `sentence-transformers` — `all-MiniLM-L6-v2` |
+            | Vector store | Chroma (cosine, persistent) |
+            | Sparse retrieval | `rank-bm25` (BM25Okapi) |
+            | Reranker | CrossEncoder (`ms-marco-MiniLM-L-6-v2`) |
+            | PDF extraction | `pdfplumber` (structured) + `pypdf` (fallback) |
+            | Image extraction | `pymupdf` (fitz) + LLaVA via Ollama |
+            | LLM | Ollama (local) · HuggingFace Inference · Transformers (fallback) |
+            | Frontend | Streamlit |
+            | Config | `pydantic-settings` + `.env` |
+            | Logging | loguru |
+
+            ---
+
+            ### 🚀 Getting Started
+
+            1. Start **Ollama**: `ollama serve` → `ollama pull mistral`
+            2. *(Optional for charts)* `ollama pull llava`
+            3. Go to **📄 Documents** tab → upload PDF / DOCX → click **Process and Index**
+            4. Switch to **💬 Chat** tab and ask questions
+
+            ---
+
+            ### 💡 Tips
+
+            - Enable **LLaVA figure description** only if your PDF has meaningful charts (adds ~20 s per unique figure)
+            - Raise **Top-K Retrieval** for broad questions; lower it for targeted look-ups
+            - Use **Conversation History** naturally — "And what about Maharashtra?" works as a follow-up
+            - **Reranking off** + broad query mode auto-activates for summary/overview questions
+            - Logs: `logs/app.log` and `logs/streamlit.log`
+
+            ---
+            Built with ❤️ using free and open-source tools · Fully local · No API keys required
             """)
 
 

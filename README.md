@@ -46,11 +46,15 @@ A production-oriented Retrieval-Augmented Generation (RAG) stack using open-sour
 
 - **Hybrid search:** Dense vectors (sentence-transformers) plus BM25; configurable weights.
 - **Reranking:** Cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2` by default) with threshold and top-k.
+- **Smart chunking:** Table-aware extraction — markdown tables kept as single chunks; prose split by paragraph → sentence → word with section-heading prefix automatically prepended.
+- **Multimodal (LLaVA):** Embedded charts and figures in PDFs described by LLaVA via Ollama; MD5-deduped, capped at 20 per document, 30 s per-image timeout, live progress bar.
+- **Multi-turn conversation memory:** Last 3 exchanges injected into the LLM prompt so follow-up questions (e.g. "And what about Kerala?") resolve correctly.
+- **Page citations:** Every chunk tagged `[Page N]`; LLM instructed to cite page numbers in answers.
 - **LLM backends:** Ollama (`LLM_TYPE=ollama`), Hugging Face Inference (`LLM_TYPE=huggingface`), or local Transformers (`LLM_TYPE=transformers`).
-- **Persistence:** Chroma stores embeddings under `cache/vectorstore`.
-- **Caching:** In-memory answer cache in `RAGPipeline` (keyed by query + context; see [Configuration](#configuration)).
-- **UI:** Streamlit chat for research docs with `.pdf/.doc/.docx` uploads and runtime tuning controls.
-- **Fresh-session indexing:** startup reset and upload-time replacement so stale vectors/documents are not reused.
+- **Persistence:** Chroma stores embeddings under `cache/vectorstore`; reset uses ChromaDB API (no `shutil.rmtree` stale-lock issues on macOS/APFS).
+- **Caching:** In-memory answer cache in `RAGPipeline` with TTL (keyed by query + context; see [Configuration](#configuration)).
+- **UI:** Streamlit chat for research docs with `.pdf/.doc/.docx` uploads and runtime sidebar controls.
+- **Fresh-session indexing:** Startup reset and upload-time replacement so stale vectors are never reused.
 - **Evaluation:** `evaluation/evaluator.py` (RAGAS) and `evaluation/metrics.py` (extra retrieval/similarity helpers).
 
 ---
@@ -63,6 +67,8 @@ A production-oriented Retrieval-Augmented Generation (RAG) stack using open-sour
 | Vector store | Chroma (cosine, persistent) |
 | Sparse search | BM25 (`rank-bm25`) |
 | Reranker | Sentence-Transformers CrossEncoder |
+| PDF extraction | `pdfplumber` (structured, table-aware) + `pypdf` (fallback) |
+| Image extraction | `pymupdf` (fitz) + LLaVA via Ollama |
 | LLM | Ollama / Hugging Face / Transformers |
 | UI | Streamlit |
 | Config | `pydantic-settings`, `.env` |
@@ -165,9 +171,10 @@ Copy `.env.example` to `.env` if present. Important variables:
 ### Ollama models (examples)
 
 ```bash
-ollama pull mistral        # balanced default
+ollama pull mistral        # default LLM (balanced)
 ollama pull neural-chat    # smaller / faster
 ollama pull orca-mini      # lightweight
+ollama pull llava          # vision model for chart/figure description
 ```
 
 Match `OLLAMA_MODEL` in `config.py` to the pulled model name.
@@ -210,14 +217,25 @@ python scripts/ingest_documents.py doc1.txt doc2.md --output cache/indexed_docs.
 
 Splits files on blank lines (`\n\n`) into chunks before indexing. Also calls `save_documents()` on the pipeline when finished.
 
-### Research-paper defaults
+### Research-paper / government-report defaults
 
-The default configuration is tuned for academic PDFs/Word docs with dense sections, references, and tables:
+The default configuration is tuned for dense structured documents (academic PDFs, government statistics reports):
 - `VECTOR_WEIGHT=0.8`, `BM25_WEIGHT=0.2`
 - `TOP_K_RETRIEVAL=20`, `TOP_K_RERANK=8`
 - `RERANKER_SCORE_THRESHOLD=0.05`
-- `CHUNK_SIZE=900`, `CHUNK_OVERLAP=150` (word-based in UI ingestion)
+- `CHUNK_SIZE=900`, `CHUNK_OVERLAP=150` (words; smart chunker respects natural boundaries first)
 - `TEMPERATURE=0.25`, `TOP_P=0.9`, `MAX_NEW_TOKENS=800`
+
+**Smart chunker behaviour (UI uploads):**
+1. Markdown table blocks (`| ... |` lines) → kept as **one chunk each** (never word-split).
+2. Prose → split by paragraph (`\n\n`), then sentence, then word-level overlap as last resort.
+3. Section headings (markdown `#`, bold `**Title**`, or ALL-CAPS short lines) are detected and prepended as context to subsequent chunks.
+
+**LLaVA figure extraction limits (UI uploads):**
+- Minimum image size: 200 × 200 px (cuts logos, bullets, decorative elements)
+- Max figures per document: 20
+- Per-image timeout: 30 seconds (hung images skipped with warning)
+- Duplicate images (same bytes, different pages): described once via MD5 deduplication
 
 ---
 
@@ -282,11 +300,11 @@ flowchart LR
 
 **Indexing:** `HybridSearch.add_documents` embeds texts, writes to Chroma, rebuilds BM25 in memory. Metadata defaults to `{"id": i}` per batch.
 
-**Persistence:** Vectors persist on disk. BM25 is **in-memory**; after a restart, if Chroma still has documents but the process never called `add_documents` in that session, hybrid search may use **vector-only** until documents are re-ingested (BM25 branch empty).
+**Persistence:** Vectors persist on disk. BM25 is **in-memory**; after a restart, if Chroma still has documents but the process never called `add_documents` in that session, hybrid search may use **vector-only** until documents are re-ingested.
 
-**Chunking:** `scripts/ingest_documents.py` splits on double newlines. `streamlit_app.py` uses its own word-based windows for uploads—not necessarily `CHUNK_SIZE` from config.
+**Smart chunking (UI uploads):** Tables are extracted as markdown by `pdfplumber` and kept as single chunks. Prose goes through paragraph → sentence → word recursive splitting with the active section heading prepended as context. `scripts/ingest_documents.py` still uses a simple double-newline split for plain text.
 
-**Chroma IDs:** Batches use `doc_0` … `doc_{n-1}`. Re-indexing strategies should avoid unintended overwrites if you add multiple batches without clearing the collection.
+**Chroma IDs:** Batches use `doc_0` … `doc_{n-1}`. Re-indexing uses the ChromaDB API (`delete_collection` + `get_or_create_collection`) to avoid stale file-lock issues on macOS/APFS.
 
 ---
 
@@ -411,11 +429,14 @@ Typo note (some guides): use `gpedit.msc` for Local Group Policy Editor.
 | Symptom | Things to try |
 |---------|----------------|
 | Cannot connect to Ollama | Run `ollama serve`; check `OLLAMA_BASE_URL`; open `http://localhost:11434/api/tags` |
+| LLaVA not describing figures | Run `ollama pull llava`; ensure Ollama is running; enable the checkbox in the Documents tab |
+| LLaVA very slow | Normal: ~20 s per figure. Cap is 20 figures/doc; raise `_LLAVA_MIN_PX` to filter more aggressively |
 | HF errors / auth | Set `HF_TOKEN`; ensure `LLM_TYPE=huggingface` |
 | `ModuleNotFoundError: ragas` | `pip install ragas datasets` |
 | Out of memory | Smaller Ollama model; reduce `BATCH_SIZE`, `TOP_K_RETRIEVAL`; disable reranking |
 | Slow answers | Enable cache; reduce retrieval top-k; smaller models |
 | Empty retrieval | Index documents first; check Chroma path and permissions |
+| Chat tab not unlocking after upload | Should auto-unlock; if not, click any other tab then return to Chat |
 | RAGAS context format | Evaluator splits context on lines; ensure retrieved context is compatible |
 
 Logs: `logs/app.log`, `logs/streamlit.log`.
@@ -425,21 +446,25 @@ Logs: `logs/app.log`, `logs/streamlit.log`.
 ## Optimization
 
 - **Latency:** Cache on; smaller embedding/rerank models; lower `TOP_K_RETRIEVAL`.
-- **Quality:** Reranking on; tune `VECTOR_WEIGHT` / `BM25_WEIGHT`; increase retrieval before rerank.
+- **Quality:** Reranking on; tune `VECTOR_WEIGHT` / `BM25_WEIGHT`; increase retrieval before rerank; upload more pages.
 - **Memory:** Lower batch sizes; shorter `MAX_NEW_TOKENS`.
+- **LLaVA speed:** Raise `_LLAVA_MIN_PX` in `streamlit_app.py` to filter smaller images; lower `_LLAVA_MAX_IMAGES` cap; skip LLaVA for text-heavy documents with no meaningful charts.
 
 ---
 
 ## Performance expectations
 
-Rough CPU-oriented timings (vary by hardware):
+Rough timings (Apple M-series / modern CPU):
 
 | Step | Typical range |
 |------|----------------|
-| Embed batch | ~0.5s per tens of chunks |
+| PDF text extraction (pdfplumber) | 1–5 s per 100 pages |
+| Smart chunking | negligible (pure Python) |
+| Embed batch | ~0.5 s per tens of chunks |
 | Vector + BM25 hybrid | tens of ms at modest corpus sizes |
 | Rerank | ~100–300 ms |
-| LLM | seconds (model-dependent) |
+| LLM (Mistral via Ollama) | 5–30 s depending on answer length |
+| LLaVA per figure | ~15–30 s (20-figure cap = max ~10 min) |
 | End-to-end query | ~3–15 s |
 
 ---
@@ -462,7 +487,8 @@ Rough CPU-oriented timings (vary by hardware):
 
 - Query expansion, semantic routing, agents/tool use
 - Streaming generation
-- Stronger chunking strategies and multimodal support
+- Parent-child retrieval (small chunk retrieval → large chunk to LLM)
+- Configurable LLaVA image cap and min-size via UI sidebar
 
 ---
 

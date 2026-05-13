@@ -1,9 +1,12 @@
 """Vector store abstraction using Chroma."""
 
 from typing import List, Dict, Tuple, Optional
+# pyrefly: ignore [missing-import]
 import chromadb
+# pyrefly: ignore [missing-import]
 from loguru import logger
 from config import settings
+# pyrefly: ignore [missing-import]
 import numpy as np
 import os
 

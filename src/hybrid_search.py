@@ -1,11 +1,13 @@
 """Hybrid search combining BM25 and vector search."""
 
 from typing import List, Tuple, Dict, Optional
+# pyrefly: ignore [missing-import]
 from loguru import logger
 from config import settings
 from src.bm25_search import BM25Search
 from src.vectorstore import VectorStore
 from src.embeddings import get_embedding_generator
+# pyrefly: ignore [missing-import]
 import numpy as np
 
 

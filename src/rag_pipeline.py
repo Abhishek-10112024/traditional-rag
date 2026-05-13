@@ -1,6 +1,7 @@
 """Main RAG Pipeline."""
 
 from typing import List, Dict, Tuple, Optional
+# pyrefly: ignore [missing-import]
 from loguru import logger
 from config import settings
 from src.hybrid_search import HybridSearch
@@ -58,7 +59,22 @@ class RAGPipeline:
         combined = f"{query}|||{context}"
         return hashlib.md5(combined.encode()).hexdigest()
     
-    def _build_prompt(self, query: str, context: str) -> str:
+    def _build_prompt(self, query: str, context: str, chat_history: list = None) -> str:
+        # Build conversation history block from last N turns
+        history_block = ""
+        if chat_history:
+            lines = []
+            for msg in chat_history:
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                lines.append(f"{role}: {msg.get('content', '').strip()}")
+            if lines:
+                history_block = (
+                    "\nConversation History "
+                    "(use this to resolve follow-up questions and pronouns):\n"
+                    + "\n".join(lines)
+                    + "\n"
+                )
+
         prompt = f"""
     You are a strict Retrieval-Augmented Generation (RAG) assistant.
 
@@ -68,11 +84,15 @@ class RAGPipeline:
     3. If answer is not clearly in context → say: "Not found in provided documents"
     4. For summary questions → combine ALL relevant points from context
     5. Be precise and avoid generic answers
+    6. When context includes [Page N] references, cite the page number in your answer
+       (e.g., "According to Page 5, ..." or "(Page 12)")
+    7. Use Conversation History to understand follow-up questions
+       (e.g., "And what about Kerala?" refers to the topic of the previous question)
 
-    Context:
+    Context (retrieved documents):
     {context}
-
-    Question:
+    {history_block}
+    Current Question:
     {query}
 
     Answer:
@@ -163,7 +183,8 @@ class RAGPipeline:
                  use_cache: bool = True,
                  temperature: float = None,
                  top_p: float = None,
-                 max_tokens: int = None) -> str:
+                 max_tokens: int = None,
+                 chat_history: list = None) -> str:
         """Generate answer using LLM.
         
         Args:
@@ -186,8 +207,8 @@ class RAGPipeline:
                     logger.debug("Cache entry expired; regenerating.")
                     del self.cache[cache_key]
             
-            # Build prompt
-            prompt = self._build_prompt(query, context)
+            # Build prompt (include chat history for follow-up resolution)
+            prompt = self._build_prompt(query, context, chat_history=chat_history)
             
             # Generate
             logger.debug("Generating answer with LLM...")
@@ -214,7 +235,8 @@ class RAGPipeline:
               temperature: float = None,
               top_p: float = None,
               max_tokens: int = None,
-              use_cache: bool = True) -> Dict:
+              use_cache: bool = True,
+              chat_history: list = None) -> Dict:
         """Full RAG query pipeline.
         
         Args:
@@ -261,11 +283,16 @@ class RAGPipeline:
                 else:
                     reranked = retrieved[:top_k_rerank]
             
-            # Step 3: Build context
-            context = "\n\n".join([
-                f"[Document {i+1} | Score: {score}]\n{doc}"
-                for i, (doc, score, _) in enumerate(reranked)
-            ])
+            # Step 3: Build context — include page + source from metadata
+            context_parts = []
+            for i, (doc, score, meta) in enumerate(reranked):
+                page = meta.get("page") if isinstance(meta, dict) else None
+                source = meta.get("source", "") if isinstance(meta, dict) else ""
+                page_tag = f" | Page {page}" if page else ""
+                source_tag = f" | {source}" if source else ""
+                header = f"[Document {i+1} | Score: {score:.3f}{page_tag}{source_tag}]"
+                context_parts.append(f"{header}\n{doc}")
+            context = "\n\n".join(context_parts)
             
             # Step 4: Generate
             # Debug context
@@ -280,7 +307,8 @@ class RAGPipeline:
                 use_cache=use_cache,
                 temperature=temperature,
                 top_p=top_p,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                chat_history=chat_history
             )
             
             logger.info("Query processing completed")

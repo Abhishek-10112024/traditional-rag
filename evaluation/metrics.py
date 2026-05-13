@@ -1,7 +1,9 @@
 """Additional evaluation metrics for RAG systems."""
 
 from typing import List, Dict, Tuple
+# pyrefly: ignore [missing-import]
 from loguru import logger
+# pyrefly: ignore [missing-import]
 import numpy as np
 from difflib import SequenceMatcher
 

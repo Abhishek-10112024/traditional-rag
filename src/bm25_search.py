@@ -1,7 +1,9 @@
 """BM25 Search implementation."""
 
 from typing import List, Tuple, Dict
+# pyrefly: ignore [missing-import]
 from rank_bm25 import BM25Okapi
+# pyrefly: ignore [missing-import]
 from loguru import logger
 import re
 from dataclasses import dataclass

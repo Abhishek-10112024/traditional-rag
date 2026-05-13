@@ -3,6 +3,7 @@
 import argparse
 import sys
 from pathlib import Path
+# pyrefly: ignore [missing-import]
 from loguru import logger
 
 # Add project to path

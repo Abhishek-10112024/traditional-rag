@@ -1,18 +1,22 @@
 """RAGAS evaluation framework for RAG systems."""
 
 from typing import List, Dict, Tuple
+# pyrefly: ignore [missing-import]
 from loguru import logger
 import json
 from pathlib import Path
 
 try:
+    # pyrefly: ignore [missing-import]
     from ragas import evaluate
+    # pyrefly: ignore [missing-import]
     from ragas.metrics import (
         faithfulness,
         answer_relevancy,
         context_precision,
         context_recall,
     )
+    # pyrefly: ignore [missing-import]
     from datasets import Dataset
     RAGAS_AVAILABLE = True
 except ImportError:

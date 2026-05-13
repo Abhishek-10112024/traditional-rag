@@ -1,6 +1,7 @@
 """LLM integration module supporting multiple backends."""
 
 from typing import Optional, List
+# pyrefly: ignore [missing-import]
 from loguru import logger
 from config import settings
 import requests
@@ -12,6 +13,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Try to import transformers (for TransformersLLM)
 try:
+    # pyrefly: ignore [missing-import]
     from transformers import pipeline
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
@@ -315,3 +317,60 @@ def get_llm_instance() -> BaseLLM:
     if _llm is None:
         _llm = get_llm()
     return _llm
+
+
+def describe_image_bytes(
+    image_bytes: bytes,
+    base_url: str = None,
+    model: str = "llava",
+    prompt: str = None,
+) -> str:
+    """Describe an image using LLaVA via Ollama's vision API.
+
+    Args:
+        image_bytes: Raw image bytes (PNG / JPEG / etc.)
+        base_url:    Ollama base URL (defaults to settings.OLLAMA_BASE_URL)
+        model:       Vision model name — must be pulled via `ollama pull llava`
+        prompt:      Custom description prompt (uses detailed default if None)
+
+    Returns:
+        Natural-language description of the image, or "" on any failure.
+    """
+    import base64
+
+    if base_url is None:
+        base_url = settings.OLLAMA_BASE_URL
+
+    if prompt is None:
+        prompt = (
+            "You are analysing a chart, figure, or graphic extracted from a "
+            "government statistical report. Describe what this image shows in "
+            "detail: include data values, trends, axis labels, legends, and key "
+            "insights. If it is a table, list the data row by row. "
+            "If it is a bar/line/pie chart, describe axes, categories, and "
+            "notable values. Be specific and thorough."
+        )
+
+    try:
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "images": [image_b64],
+            "stream": False,
+        }
+        response = requests.post(
+            f"{base_url}/api/generate",
+            json=payload,
+            timeout=120,
+        )
+        if response.status_code == 200:
+            return response.json().get("response", "").strip()
+        else:
+            logger.warning(
+                f"LLaVA API error {response.status_code}: {response.text[:200]}"
+            )
+            return ""
+    except Exception as e:
+        logger.warning(f"Image description failed ({model}): {e}")
+        return ""

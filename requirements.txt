@@ -1,21 +1,49 @@
-# Core RAG runtime (used by src/, streamlit_app.py, main.py, scripts/ingest_documents.py)
+# =============================================================================
+# Core RAG runtime
+# Used by: src/, streamlit_app.py, main.py, scripts/ingest_documents.py
+# =============================================================================
+
+# Embeddings + reranking
 sentence-transformers>=2.5.0
+
+# Vector store
 chromadb>=0.5.0
+
+# Sparse retrieval
 rank-bm25>=0.2.2
+
+# LLM backends (Ollama HTTP + optional HuggingFace / Transformers)
 requests>=2.32.0
 transformers>=4.36.0
 torch>=2.0.0
+
+# Web UI
 streamlit>=1.32.0
+
+# Config & settings
 python-dotenv>=1.0.0
-numpy>=2.0.0
 pydantic>=2.7.0
 pydantic-settings>=2.2.0
+
+# Utilities
+numpy>=2.0.0
 loguru>=0.7.2
 tqdm>=4.66.0
-pypdf>=4.2.0
-python-docx>=1.1.0
 
-# Evaluation (evaluation/evaluator.py, scripts/evaluate.py — RAGAS metrics)
-# Remove these two lines only if install fails on your Python version and you do not need evaluation.
+# Document parsing (PDF / Word)
+pypdf>=4.2.0           # fallback flat PDF text extraction
+python-docx>=1.1.0     # .docx tables + paragraphs
+pdfplumber>=0.10.0     # structured PDF: table-aware page extraction
+pymupdf>=1.23.0        # image/figure extraction for LLaVA multimodal pipeline
+
+# Note: hashlib, re, concurrent.futures, io, tempfile, subprocess are
+# Python standard-library modules — no pip install required.
+
+# =============================================================================
+# Evaluation (optional)
+# evaluation/evaluator.py, scripts/evaluate.py — RAGAS metrics
+# If install fails on your Python version, remove these two lines;
+# the core RAG system works without them.
+# =============================================================================
 datasets>=2.14.0
 ragas>=0.1.0
