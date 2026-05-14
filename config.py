@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+# pyrefly: ignore [missing-import]
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -69,7 +70,7 @@ class Settings(BaseSettings):
     LOG_FILE: str = str(LOGS_DIR / "app.log")
     
     # API Configuration
-    MAX_CONTEXT_LENGTH: int = 2000
+    MAX_CONTEXT_LENGTH: int = 5000
     TEMPERATURE: float = 0.25
     TOP_P: float = 0.9
     MAX_NEW_TOKENS: int = 800
