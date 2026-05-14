@@ -1,0 +1,102 @@
+[
+  {
+    "question": "What period does the Nutritional Intake in India report cover?",
+    "ground_truth": "The report covers August 2022 to July 2024 using HCES 2022-23 and 2023-24 data."
+  },
+  {
+    "question": "What was the average per capita per day calorie intake in rural India in 2023-24?",
+    "ground_truth": "Average calorie intake in rural India was 2212 Kcal per person per day."
+  },
+  {
+    "question": "What was the average per capita per day calorie intake in urban India in 2023-24?",
+    "ground_truth": "Average calorie intake in urban India was 2240 Kcal per person per day."
+  },
+  {
+    "question": "What was the average protein intake in urban India in 2023-24?",
+    "ground_truth": "Average protein intake in urban India was 63.4 grams per person per day."
+  },
+  {
+    "question": "What was the average fat intake in rural India in 2022-23?",
+    "ground_truth": "Average fat intake in rural India was 59.7 grams per person per day."
+  },
+  {
+    "question": "How did the share of households with calorie intake below 1860 Kcal change in rural India between 2022-23 and 2023-24?",
+    "ground_truth": "It declined from 14.6% in 2022-23 to 11.7% in 2023-24."
+  },
+  {
+    "question": "How did the share of households with calorie intake below 1860 Kcal change in urban India between 2022-23 and 2023-24?",
+    "ground_truth": "It declined from 12.8% in 2022-23 to 10.2% in 2023-24."
+  },
+  {
+    "question": "Which state had the highest share of cereals in calorie intake in urban India during 2023-24?",
+    "ground_truth": "Odisha had the highest cereal share in urban calorie intake at 58%."
+  },
+  {
+    "question": "Which state had the highest share of cereals in calorie intake in rural India during 2023-24?",
+    "ground_truth": "Chhattisgarh had the highest cereal share in rural calorie intake at 50%."
+  },
+  {
+    "question": "What was the total number of households surveyed in HCES 2023-24?",
+    "ground_truth": "A total of 2,61,953 households were surveyed."
+  },
+  {
+    "question": "How many rural households were surveyed in HCES 2023-24?",
+    "ground_truth": "The survey covered 1,54,357 rural households."
+  },
+  {
+    "question": "How many urban blocks were covered in HCES 2023-24?",
+    "ground_truth": "The survey covered 6,143 urban blocks."
+  },
+  {
+    "question": "What data collection method was used in HCES 2022-23 and 2023-24?",
+    "ground_truth": "The surveys used Computer-Assisted Personal Interview or CAPI."
+  },
+  {
+    "question": "How many questionnaires were used in HCES 2022-23 and 2023-24?",
+    "ground_truth": "Four questionnaires were used: HCQ, FDQ, CSQ and DGQ."
+  },
+  {
+    "question": "What are the three main nutrients analyzed in this report?",
+    "ground_truth": "The report analyzes calorie, protein and fat intake."
+  },
+  {
+    "question": "What is MPCE in the context of this report?",
+    "ground_truth": "MPCE stands for Monthly Per Capita Consumption Expenditure."
+  },
+  {
+    "question": "How did calorie intake vary with MPCE according to the report?",
+    "ground_truth": "Average calorie intake increased as MPCE increased in both rural and urban areas."
+  },
+  {
+    "question": "What was the average calorie intake in urban India in 2022-23?",
+    "ground_truth": "Average calorie intake in urban India was 2250 Kcal per person per day."
+  },
+  {
+    "question": "What was the average protein intake in rural India in 2023-24?",
+    "ground_truth": "Average protein intake in rural India was 61.8 grams per person per day."
+  },
+  {
+    "question": "What was the average fat intake in urban India in 2023-24?",
+    "ground_truth": "Average fat intake in urban India was 69.8 grams per person per day."
+  },
+  {
+    "question": "How many villages were covered in HCES 2023-24?",
+    "ground_truth": "The survey covered 8,684 villages."
+  },
+  {
+    "question": "What was the trend in rural calorie intake from 2022-23 to 2023-24?",
+    "ground_truth": "Rural calorie intake decreased slightly from 2233 Kcal to 2212 Kcal."
+  },
+  {
+    "question": "What was the trend in urban protein intake from 2022-23 to 2023-24?",
+    "ground_truth": "Urban protein intake increased slightly from 63.2 grams to 63.4 grams."
+  },
+  {
+    "question": "What was India's GDP in 2023 according to this report?",
+    "ground_truth": "Not found in the document."
+  },
+  {
+    "question": "What is the report number of Nutritional Intake in India?",
+    "ground_truth": "The report number is NSS Report No. 594."
+  }
+]
