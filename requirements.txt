@@ -33,8 +33,9 @@ tqdm>=4.66.0
 # Document parsing (PDF / Word)
 pypdf>=4.2.0           # fallback flat PDF text extraction
 python-docx>=1.1.0     # .docx tables + paragraphs
-pdfplumber>=0.10.0     # structured PDF: table-aware page extraction
+pdfplumber>=0.10.0     # structured PDF: text extraction + bordered table detection
 pymupdf>=1.23.0        # image/figure extraction for LLaVA multimodal pipeline
+camelot-py>=1.0.0      # borderless/whitespace-aligned table extraction (stream mode)
 
 # Note: hashlib, re, concurrent.futures, io, tempfile, subprocess are
 # Python standard-library modules — no pip install required.

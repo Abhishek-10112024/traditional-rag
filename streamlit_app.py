@@ -304,43 +304,109 @@ class RAGApp:
                 logger.debug(f"page_labels unavailable ({_e}); using physical page index")
 
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                # ── Pre-extract all tables via camelot (stream mode) ───────────
+                # Stream mode detects columns by whitespace gaps — exactly how
+                # government statistical reports format their data tables.
+                # When camelot is available, we use it for tables and extract
+                # ALL page text via pdfplumber (no outside_bbox filtering),
+                # which avoids the text-loss problem.
+                camelot_tables_by_page: dict = {}
+                camelot_available = False
+                _tmp_path = None
+                try:
+                    # pyrefly: ignore [missing-import]
+                    import camelot as _camelot
+                    import tempfile
+                    import os as _os
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".pdf", delete=False
+                    ) as _tmp:
+                        _tmp.write(file_bytes)
+                        _tmp_path = _tmp.name
+                    _all_camelot = _camelot.read_pdf(
+                        _tmp_path,
+                        pages="all",
+                        flavor="stream",
+                        edge_tol=50,
+                        row_tol=10,
+                    )
+                    for _ct in _all_camelot:
+                        camelot_tables_by_page.setdefault(_ct.page, []).append(_ct)
+                    camelot_available = True
+                    logger.debug(
+                        f"Camelot found {len(_all_camelot)} tables in {filename}"
+                    )
+                except ImportError:
+                    logger.debug("camelot not installed; using pdfplumber table detection")
+                except Exception as _ce:
+                    logger.warning(f"Camelot extraction failed ({_ce}); falling back to pdfplumber")
+                finally:
+                    if _tmp_path:
+                        try:
+                            _os.unlink(_tmp_path)
+                        except Exception:
+                            pass
+
                 for page_num, page in enumerate(pdf.pages, start=1):
                     # Use printed label (e.g. '1', '52', 'i') when available
                     page_label = page_label_map.get(page_num - 1, str(page_num))
                     page_parts = [f"[Page {page_label}]"]
 
-                    # 1. Extract tables as markdown --------------------------
-                    table_bboxes = []
-                    for table_obj in page.find_tables():
-                        table_bboxes.append(table_obj.bbox)
-                        data = table_obj.extract()
-                        if not data:
-                            continue
-                        md_rows = []
-                        for row_idx, row in enumerate(data):
-                            cells = [
-                                str(c or "").strip().replace("\n", " ")
-                                for c in row
-                            ]
-                            md_rows.append("| " + " | ".join(cells) + " |")
-                            if row_idx == 0:
-                                md_rows.append(
-                                    "|" + "|".join(["---"] * len(cells)) + "|"
-                                )
-                        page_parts.append("\n".join(md_rows))
+                    if camelot_available:
+                        # ── Camelot path: reliable borderless table markdown ──────
+                        for _ct in camelot_tables_by_page.get(page_num, []):
+                            _df = _ct.df
+                            # Skip trivial / malformed extractions
+                            if _df is None or _df.empty:
+                                continue
+                            if _df.shape[0] < 2 or _df.shape[1] < 2:
+                                continue
+                            _rows = []
+                            for _i, _row in _df.iterrows():
+                                cells = [str(c).strip().replace("\n", " ") for c in _row]
+                                _rows.append("| " + " | ".join(cells) + " |")
+                                if _i == 0:
+                                    _rows.append(
+                                        "|" + "|".join(["---"] * len(cells)) + "|"
+                                    )
+                            page_parts.append("\n".join(_rows))
 
-                    # 2. Extract text OUTSIDE table areas --------------------
-                    filtered_page = page
-                    for bbox in table_bboxes:
-                        try:
-                            filtered_page = filtered_page.outside_bbox(bbox)
-                        except Exception:
-                            pass  # edge-case clipping failure — skip
+                        # Extract ALL page text (no outside_bbox filtering needed)
+                        raw_text = (
+                            page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+                        )
 
-                    raw_text = (
-                        filtered_page.extract_text(x_tolerance=3, y_tolerance=3)
-                        or ""
-                    )
+                    else:
+                        # ── pdfplumber fallback (original behaviour) ──────────
+                        table_bboxes = []
+                        for table_obj in page.find_tables():
+                            table_bboxes.append(table_obj.bbox)
+                            data = table_obj.extract()
+                            if not data:
+                                continue
+                            md_rows = []
+                            for row_idx, row in enumerate(data):
+                                cells = [
+                                    str(c or "").strip().replace("\n", " ")
+                                    for c in row
+                                ]
+                                md_rows.append("| " + " | ".join(cells) + " |")
+                                if row_idx == 0:
+                                    md_rows.append(
+                                        "|" + "|".join(["---"] * len(cells)) + "|"
+                                    )
+                            page_parts.append("\n".join(md_rows))
+
+                        filtered_page = page
+                        for bbox in table_bboxes:
+                            try:
+                                filtered_page = filtered_page.outside_bbox(bbox)
+                            except Exception:
+                                pass
+                        raw_text = (
+                            filtered_page.extract_text(x_tolerance=3, y_tolerance=3)
+                            or ""
+                        )
 
                     # Filter lone page-number lines (e.g. "47", "  3  ")
                     clean_lines = [
