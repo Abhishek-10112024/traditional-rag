@@ -291,9 +291,23 @@ class RAGApp:
         """
         texts, metadatas = [], []
         try:
+            # Build printed-page-label map via pypdf.
+            # pypdf.page_labels gives the labels actually printed in the PDF
+            # footer (e.g. 'i','ii','1','2') instead of the raw physical index.
+            page_label_map: dict = {}
+            try:
+                _tmp_reader = PdfReader(io.BytesIO(file_bytes))
+                for _idx, _lbl in enumerate(_tmp_reader.page_labels):
+                    _lbl = (_lbl or "").strip()
+                    page_label_map[_idx] = _lbl if _lbl else str(_idx + 1)
+            except Exception as _e:
+                logger.debug(f"page_labels unavailable ({_e}); using physical page index")
+
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                 for page_num, page in enumerate(pdf.pages, start=1):
-                    page_parts = [f"[Page {page_num}]"]
+                    # Use printed label (e.g. '1', '52', 'i') when available
+                    page_label = page_label_map.get(page_num - 1, str(page_num))
+                    page_parts = [f"[Page {page_label}]"]
 
                     # 1. Extract tables as markdown --------------------------
                     table_bboxes = []
@@ -342,13 +356,13 @@ class RAGApp:
                     page_content = "\n\n".join(
                         p for p in page_parts if p.strip()
                     )
-                    if page_content.strip() == f"[Page {page_num}]":
+                    if page_content.strip() == f"[Page {page_label}]":
                         continue  # completely empty page
 
                     # 4. Chunk and tag with metadata -----------------------
                     for chunk in self._smart_chunk(page_content):
                         texts.append(chunk)
-                        metadatas.append({"source": filename, "page": page_num})
+                        metadatas.append({"source": filename, "page": page_label})
 
         except Exception as e:
             logger.warning(
